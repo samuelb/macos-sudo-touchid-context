@@ -25,13 +25,9 @@ cleanup() {
 }
 trap cleanup EXIT
 stage="$(make_stage "$probe")"
-if [[ -f "$sudo_local" ]] && grep -q "pam_tid_context\.so" "$sudo_local"; then
-    # Drop our line; re-enable the stock Touch ID line we commented out on install.
-    awk '
-        /pam_tid_context\.so/ && !/^[[:space:]]*#/ { next }
-        /^#auth[[:space:]]+sufficient[[:space:]]+pam_tid\.so/ && !restored { sub(/^#/, ""); restored = 1 }
-        { print }
-    ' "$sudo_local" > "$new"
+if [[ -f "$sudo_local" ]] && grep -q -e 'pam_tid_context\.so' -e "^$disabled_marker" -e "^$added_marker\$" "$sudo_local"; then
+    # Drop this module's line and restore exactly the line install replaced.
+    rewrite_for_uninstall < "$sudo_local" > "$new"
     stage_file "$new" "$stage/sudo_local"
 fi
 

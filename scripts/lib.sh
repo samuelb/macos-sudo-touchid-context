@@ -66,6 +66,105 @@ secure_path() {
     done
 }
 
+# ---- Rewriting sudo_local
+#
+# The rewrite must not change what the policy means, only which module does
+# Touch ID:
+# - The Touch ID line keeps its position, control flag and options. A rule like
+#   "auth required pam_tid.so" (Touch ID and then the password) stays
+#   "required"; making it "sufficient" would let Touch ID alone skip the
+#   password.
+# - The line it replaces is kept, commented out behind a marker, so uninstall
+#   restores exactly that line (indented, absolute path, other flags) and
+#   nothing else. Without a marker, uninstall used to re-enable the first
+#   "#auth sufficient pam_tid.so" it found, which can be Apple's template
+#   line, and so turned on Touch ID for someone who never had it.
+# - Re-installing updates this module's line in place instead of moving it
+#   to the end, where it could land after a "pam_deny".
+# - Anything else is refused rather than guessed: more than one active Touch
+#   ID line, or another pam_tid_* module.
+
+# Install leaves one of these in front of its line: the line it replaced,
+# commented out, or a note that it replaced nothing. Uninstall restores the
+# first and drops the second; only a file with neither is treated as an
+# install from before the markers.
+disabled_marker="#pam_tid_context-disabled: "
+added_marker="#pam_tid_context-added"
+
+# rewrite_for_install <module path>: sudo_local on stdin, the new one on stdout.
+# Exits 3, with the reason on stderr, for a configuration it does not handle.
+rewrite_for_install() {
+    /usr/bin/awk -v dest="$1" -v marker="$disabled_marker" -v added="$added_marker" '
+        function with_module(l, m,   f, at) {
+            split(l, f)
+            at = index(l, f[3])
+            return substr(l, 1, at - 1) m substr(l, at + length(f[3]))
+        }
+        { line[NR] = $0 }
+        /^[[:space:]]*#/ {
+            if (!template && index($0, marker) != 1 &&
+                $0 ~ /^#[[:space:]]*auth[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]*pam_tid\.so(\.2)?([[:space:]]|$)/)
+                template = NR
+            next
+        }
+        $1 == "auth" && $3 ~ /(^|\/)pam_tid_context\.so$/ { kind[NR] = "ours"; active++; next }
+        $1 == "auth" && $3 ~ /(^|\/)pam_tid\.so(\.2)?$/ { kind[NR] = "stock"; active++; next }
+        $1 == "auth" && $3 ~ /(^|\/)pam_tid_[a-z_]+\.so(\.2)?$/ { other = $3 }
+        END {
+            if (other != "") {
+                print "sudo_local uses another Touch ID module (" other "); remove it by hand first" > "/dev/stderr"
+                exit 3
+            }
+            if (active > 1) {
+                print "sudo_local has " active " active Touch ID lines; reduce them to one by hand first" > "/dev/stderr"
+                exit 3
+            }
+            for (i = 1; i <= NR; i++) {
+                if (kind[i] == "stock") {
+                    print marker line[i]
+                    print with_module(line[i], dest)
+                } else if (kind[i] == "ours") {
+                    print with_module(line[i], dest)
+                } else {
+                    print line[i]
+                }
+                # No Touch ID line yet: go right after the commented template line.
+                if (!active && i == template) { print added; print "auth       sufficient     " dest }
+            }
+            if (!active && !template) { print added; print "auth       sufficient     " dest }
+        }'
+}
+
+# rewrite_for_uninstall: sudo_local on stdin, without this module, on stdout.
+# Restores the lines install marked; notes on stderr what it restored by guess.
+rewrite_for_uninstall() {
+    /usr/bin/awk -v marker="$disabled_marker" -v added="$added_marker" '
+        function is_ours(l,   f) {
+            split(l, f)
+            return l !~ /^[[:space:]]*#/ && f[1] == "auth" && f[3] ~ /(^|\/)pam_tid_context\.so$/
+        }
+        function is_commented_stock(l) {
+            return l ~ /^#[[:space:]]*auth[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]*pam_tid\.so(\.2)?([[:space:]]|$)/
+        }
+        { line[NR] = $0; if (index($0, marker) == 1 || $0 == added) marked = 1 }
+        END {
+            for (i = 1; i <= NR; i++) {
+                l = line[i]
+                if (index(l, marker) == 1) { print substr(l, length(marker) + 1); continue }
+                if (l == added || is_ours(l)) continue
+                # Installs from before the marker commented the stock line out
+                # with a plain "#", right above the line for this module.
+                if (!marked && is_commented_stock(l) && i < NR && is_ours(line[i + 1])) {
+                    print substr(l, 2)
+                    print "re-enabled \"" substr(l, 2) "\", which an older install commented out." > "/dev/stderr"
+                    print "If Touch ID for sudo was off before you installed, comment it out again." > "/dev/stderr"
+                    continue
+                }
+                print l
+            }
+        }'
+}
+
 # ---- Privileged steps
 #
 # install.sh and uninstall.sh prepare everything as the user, copy it into a

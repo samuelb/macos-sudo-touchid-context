@@ -164,6 +164,34 @@ Protection covers; a third-party module cannot get that protection, only the
 ownership rule above. A `pam_reattach.so` under Homebrew's user-owned
 `/opt/homebrew/lib/pam` has the exposure this section describes.
 
+## Rewriting sudo_local
+
+The rewrite changes only which module does Touch ID, not what the policy means
+(`rewrite_for_install` and `rewrite_for_uninstall` in `scripts/lib.sh`):
+
+- **Control flag, options and position are kept.** Earlier versions replaced
+  any Touch ID line with `auth sufficient <module>`. A policy that requires
+  Touch ID and then the password (`auth required pam_tid.so` before the
+  password module) became one where Touch ID alone skips the password. Now the
+  flag and options are copied from the line being replaced.
+- **Uninstall restores exactly what install replaced.** The replaced line is
+  kept as `#pam_tid_context-disabled: <line>`, verbatim. When there was no
+  Touch ID line, `#pam_tid_context-added` marks the line as new. Earlier
+  versions re-enabled the first `#auth sufficient pam_tid.so` on uninstall.
+  That could be Apple's template line, turning on Touch ID for someone who
+  never had it, and indented, absolute-path or non-`sufficient` lines were
+  never restored.
+- **Re-installing edits the line in place.** Earlier versions dropped it and
+  appended a new one at the end, after any later line (a `pam_deny`, for
+  example).
+- **Unclear configurations are refused:** more than one active Touch ID line,
+  or another `pam_tid_*` module.
+
+A file written by an install from before the markers has neither marker. For
+it, uninstall re-enables a commented `pam_tid.so` line directly above this
+module's line, as before. It warns that the line may be Apple's template
+rather than a line install commented out.
+
 ## Installing as root
 
 `install.sh` and `uninstall.sh` prepare everything as the user, then copy it

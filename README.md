@@ -64,9 +64,15 @@ just try-sudo    # in a new terminal: sudo -k; sudo /usr/bin/id -un
    authenticates, so a user who can replace it gets root without a prompt
    ([details](docs/how-it-works.md#where-the-module-is-installed)).
 2. Copies the module, the libpam probe and the new `sudo_local` into a
-   root-owned staging directory. The new `sudo_local` has active `pam_tid.so`
-   lines commented out and this module's line in place of the first one (after
-   `pam_reattach.so`, if you use it); re-running is idempotent. From here on
+   root-owned staging directory. In the new `sudo_local`, this module's line
+   takes the place of the active `pam_tid.so` line, with the same control flag
+   and options (so it stays after `pam_reattach.so`, and `required` stays
+   `required`). The old line stays, commented out behind a
+   `#pam_tid_context-disabled:` marker. With no Touch ID line, this module's
+   line goes after Apple's commented template line, behind a
+   `#pam_tid_context-added` marker. More than one active Touch ID line, or
+   another `pam_tid_*` module, is refused. Re-running updates the line in
+   place ([details](docs/how-it-works.md#rewriting-sudo_local)). From here on
    only these copies are used, so nothing running as you can swap a file
    between the check and the install
    ([details](docs/how-it-works.md#installing-as-root)).
@@ -103,8 +109,8 @@ authenticates through the macOS admin dialog rather than sudo's PAM stack.
 just uninstall
 ```
 
-Removes this module's line from `sudo_local` and re-enables the commented-out
-`pam_tid.so` line, shows the diff and asks, then, in one root process, checks
+Removes this module's line from `sudo_local` and restores exactly the line
+install replaced (nothing, if it replaced nothing), shows the diff and asks, then, in one root process, checks
 the result with libpam before and after writing it, and only then deletes the
 module file. Deleting the file first would lock sudo.
 

@@ -39,22 +39,12 @@ cleanup() {
 trap cleanup EXIT
 stage="$(make_stage "$probe")"
 stage_file "$root/build/$module" "$stage/$module"
-# Comment out active pam_tid.so / pam_tid_* lines, put ours where the first one
-# was (keeps it after pam_reattach if present), append if there was none.
-# Existing lines for this module (also at its old path) are dropped so
-# re-running is idempotent.
-{ [[ -f "$sudo_local" ]] && cat "$sudo_local"; true; } | awk -v dest="$dest" -v legacy="$legacy_dest" '
-    BEGIN { ours = "auth       sufficient     " dest }
-    /^[[:space:]]*#/ { print; next }
-    $1 == "auth" && ($3 == dest || $3 == legacy) { next }
-    $1 == "auth" && ($3 ~ /(^|\/)pam_tid(_[a-z]+)?\.so(\.2)?$/) {
-        print "#" $0
-        if (!done) { print ours; done = 1 }
-        next
-    }
-    { print }
-    END { if (!done) print ours }
-' > "$new"
+# This module's line takes the place of the active pam_tid.so line, with the
+# same control flag and options; that line stays, commented out behind a
+# marker, for uninstall. See "Rewriting sudo_local" in scripts/lib.sh.
+if ! { [[ -f "$sudo_local" ]] && cat "$sudo_local"; true; } | rewrite_for_install "$dest" > "$new"; then
+    die "nothing changed"
+fi
 stage_file "$new" "$stage/sudo_local"
 # From here on only the root-owned copies are used: they are what was shown,
 # what libpam checks and what gets installed.

@@ -152,4 +152,68 @@ else
 fi
 expect_eq "nothing written"               "auth       sufficient     pam_tid.so" "$(cat "$policy")"
 
+# --- rewrite_for_install / rewrite_for_uninstall on sample sudo_local files.
+d=/usr/local/pam_tid_context/pam_tid_context.so
+ours="auth       sufficient     $d"
+m="$disabled_marker"
+a="$added_marker"
+header=$'# sudo_local: local config file which survives system update and is included for sudo\n# uncomment following line to enable Touch ID for sudo'
+expect_rewrite() {  # expect_rewrite <label> <input> <expected install output>
+    local got back
+    got="$(printf '%s\n' "$2" | rewrite_for_install "$d" 2>&1)" || true
+    expect_eq "$1: install" "$3" "$got"
+    back="$(printf '%s\n' "$got" | rewrite_for_uninstall 2>/dev/null)"
+    expect_eq "$1: uninstall restores the original" "$2" "$back"
+    expect_eq "$1: re-install is idempotent" "$got" "$(printf '%s\n' "$got" | rewrite_for_install "$d")"
+}
+
+expect_rewrite "Apple's template, Touch ID on" \
+    "$header"$'\nauth       sufficient     pam_tid.so' \
+    "$header"$'\n'"${m}auth       sufficient     pam_tid.so"$'\n'"$ours"
+# Uninstall must not enable Touch ID that was never on (it used to uncomment
+# the template line).
+expect_rewrite "Apple's template, Touch ID off" \
+    "$header"$'\n#auth       sufficient     pam_tid.so' \
+    "$header"$'\n#auth       sufficient     pam_tid.so\n'"$a"$'\n'"$ours"
+# Touch ID as a required factor stays required; "sufficient" would skip the password.
+expect_rewrite "control flag kept" \
+    $'auth       required       pam_tid.so\nauth       required       pam_opendirectory.so' \
+    "${m}auth       required       pam_tid.so"$'\n'"auth       required       $d"$'\nauth       required       pam_opendirectory.so'
+expect_rewrite "after pam_reattach, before later lines" \
+    $'auth       optional       /opt/homebrew/lib/pam/pam_reattach.so\nauth       sufficient     pam_tid.so\nauth       required       pam_deny.so' \
+    $'auth       optional       /opt/homebrew/lib/pam/pam_reattach.so\n'"${m}auth       sufficient     pam_tid.so"$'\n'"$ours"$'\nauth       required       pam_deny.so'
+expect_rewrite "indentation, absolute path and options kept" \
+    $'  auth  sufficient  /usr/lib/pam/pam_tid.so.2  no_warn' \
+    "${m}  auth  sufficient  /usr/lib/pam/pam_tid.so.2  no_warn"$'\n'"  auth  sufficient  $d  no_warn"
+
+# Re-installing updates the line in place; it used to be dropped and appended,
+# here after the pam_deny.
+installed="$(printf '%s\n' $'auth       sufficient     pam_tid.so\nauth       required       pam_deny.so' | rewrite_for_install "$d")"
+expect_eq "re-install keeps the position" "$installed" "$(printf '%s\n' "$installed" | rewrite_for_install "$d")"
+
+# An install from before the marker, at the old path.
+old=$'#auth       sufficient     pam_tid.so\nauth       sufficient     /usr/local/lib/pam/pam_tid_context.so'
+expect_eq "old install: path updated in place" \
+    $'#auth       sufficient     pam_tid.so\n'"$ours" "$(printf '%s\n' "$old" | rewrite_for_install "$d")"
+expect_eq "old install: uninstall re-enables the line above" \
+    "auth       sufficient     pam_tid.so" "$(printf '%s\n' "$old" | rewrite_for_uninstall 2>/dev/null)"
+expect "old install: and says so" "comment it out again" "$(printf '%s\n' "$old" | rewrite_for_uninstall 2>&1 >/dev/null)"
+expect_eq "marked line restored even without this module's line" \
+    "auth       sufficient     pam_tid.so" "$(printf '%s\n' "${m}auth       sufficient     pam_tid.so" | rewrite_for_uninstall)"
+expect_eq "no sudo_local: just this module's line" "$a"$'\n'"$ours" "$(rewrite_for_install "$d" < /dev/null)"
+expect_eq "and uninstall empties it again" "" "$(printf '%s\n' "$a" "$ours" | rewrite_for_uninstall)"
+
+# Configurations it does not guess at.
+refused() {  # refused <label> <input> <substring of the reason>
+    local err
+    if err="$(printf '%s\n' "$2" | rewrite_for_install "$d" 2>&1 >/dev/null)"; then
+        bad "$1" "it rewrote the file"
+    else
+        expect "$1" "$3" "$err"
+    fi
+}
+refused "two active Touch ID lines refused" $'auth sufficient pam_tid.so\nauth sufficient pam_tid.so' "2 active Touch ID lines"
+refused "stock line next to this module refused" "auth sufficient pam_tid.so"$'\n'"$ours" "2 active Touch ID lines"
+refused "another pam_tid_* module refused" "auth sufficient /usr/local/lib/pam/pam_tid_other.so" "another Touch ID module"
+
 exit "$fail"
