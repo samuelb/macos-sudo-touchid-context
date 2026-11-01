@@ -18,7 +18,10 @@
 #include <os/log.h>
 #include <errno.h>
 
+// The dialog showed a ~150-character reason in full; longer text is not known to fit.
 #define MAX_REASON 160
+// Room kept for the requester when the command is long.
+#define MIN_REQUESTER 16
 #define LOG os_log_create("pam_tid_context", "auth")
 
 // Return nil from a function that has an `NSString **why` parameter, saying why.
@@ -87,6 +90,64 @@ static pid_t parent_of(pid_t pid) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
     if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len == 0) return 0;
     return kp.kp_eproc.e_ppid;
+}
+
+// Only for the requester, never for the command. Its input is ASCII after
+// display_word, plus this file's own "→", so no character is split.
+static NSString *truncated(NSString *s, NSUInteger max) {
+    return s.length <= max ? s : [[s substringToIndex:max - 1] stringByAppendingString:@"…"];
+}
+
+static BOOL plain_char(unichar c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           (c && strchr("_@%+=:,./-", (int)c));
+}
+
+// One argument as the dialog shows it, written so that it reads back as exactly one
+// argument with exactly these characters (bash/zsh quoting):
+// - only printable ASCII is shown as it is; anything else (newlines and other
+//   control characters, bidi overrides, zero-width and format characters,
+//   look-alike letters such as Cyrillic "і") is written as an escape inside $'…';
+// - a word with a space or shell punctuation, or an empty word, is single-quoted.
+// Without this, a newline in an argument could draw a fake "requested by:" line,
+// and `sh -c 'a; b'` and `sh -c 'a;' b` read the same.
+static NSString *display_word(NSString *w) {
+    BOOL escape = NO, quote = w.length == 0;
+    for (NSUInteger i = 0; i < w.length; i++) {
+        unichar c = [w characterAtIndex:i];
+        if (c < 0x20 || c > 0x7e) escape = YES;
+        else if (!plain_char(c)) quote = YES;
+    }
+    if (!escape && !quote) return w;
+    if (!escape) return [NSString stringWithFormat:@"'%@'", [w stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+
+    NSMutableString *out = [NSMutableString stringWithString:@"$'"];
+    NSData *utf32 = [w dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
+    if (!utf32) {  // unpaired surrogate: cannot come from UTF-8, but never show it raw
+        for (NSUInteger i = 0; i < w.length; i++) [out appendFormat:@"\\u%04X", [w characterAtIndex:i]];
+        [out appendString:@"'"];
+        return out;
+    }
+    const uint32_t *cp = utf32.bytes;
+    for (NSUInteger i = 0; i < utf32.length / 4; i++) {
+        uint32_t c = OSSwapLittleToHostInt32(cp[i]);
+        if (c == '\\' || c == '\'') [out appendFormat:@"\\%c", (char)c];
+        else if (c == '\n') [out appendString:@"\\n"];
+        else if (c == '\t') [out appendString:@"\\t"];
+        else if (c == '\r') [out appendString:@"\\r"];
+        else if (c >= 0x20 && c <= 0x7e) [out appendFormat:@"%c", (char)c];
+        else if (c < 0x20 || c == 0x7f) [out appendFormat:@"\\x%02X", c];
+        else if (c <= 0xffff) [out appendFormat:@"\\u%04X", c];
+        else [out appendFormat:@"\\U%08X", c];
+    }
+    [out appendString:@"'"];
+    return out;
+}
+
+static NSString *display_words(NSArray<NSString *> *words) {
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:words.count];
+    for (NSString *w in words) [out addObject:display_word(w)];
+    return [out componentsJoinedByString:@" "];
 }
 
 // ---- What sudo will do ------------------------------------------------------------
@@ -225,10 +286,6 @@ static NSString *sudo_shell_command(NSArray<NSString *> *words) {
     return out;
 }
 
-static NSString *joined(NSArray<NSString *> *words) {
-    return [words componentsJoinedByString:@" "];
-}
-
 // What sudo will do with these arguments, as dialog text ("run: …", "run as
 // postgres: …", "edit: …"), or nil with the reason in *why.
 static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString *, id> *env, NSString **why) {
@@ -364,8 +421,8 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
     if (!me) UNSURE(@"no passwd entry for uid %d", getuid());
     NSString *target = user ?: (group ? me : @"root");  // -g alone runs as the caller
     NSMutableString *as = [NSMutableString string];
-    if (![target isEqualToString:@"root"] && ![target isEqualToString:@"#0"]) [as appendFormat:@" as %@", target];
-    if (group) [as appendFormat:@" with group %@", group];
+    if (![target isEqualToString:@"root"] && ![target isEqualToString:@"#0"]) [as appendFormat:@" as %@", display_word(target)];
+    if (group) [as appendFormat:@" with group %@", display_word(group)];
 
     // Variables set for the command. Homebrew passes LOGNAME, USER and USERNAME set
     // to the caller's own name, which change nothing worth a line in the dialog.
@@ -381,10 +438,11 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
         case 'v':
             return @"refresh your cached sudo credentials";
         case 'l':
-            return list_user ? [NSString stringWithFormat:@"list the sudo rights of %@", list_user]
+            return list_user ? [NSString stringWithFormat:@"list the sudo rights of %@", display_word(list_user)]
                              : @"list your sudo rights";
         case 'c':
-            return [NSString stringWithFormat:@"check whether %@ may run: %@", list_user ?: @"you", joined(cmd)];
+            return [NSString stringWithFormat:@"check whether %@ may run: %@",
+                                              list_user ? display_word(list_user) : @"you", display_words(cmd)];
         case 'e': {
             NSMutableArray *files = [NSMutableArray array];
             NSString *cwd = working_directory();
@@ -392,7 +450,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
                 if (![f hasPrefix:@"/"] && !cwd) UNSURE(@"no working directory for %@", f);
                 [files addObject:[f hasPrefix:@"/"] ? f : [NSString stringWithFormat:@"%@/%@", cwd, f]];
             }
-            return [NSString stringWithFormat:@"edit%@: %@", as, joined(files)];
+            return [NSString stringWithFormat:@"edit%@: %@", as, display_words(files)];
         }
     }
 
@@ -431,11 +489,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
         run = [@[path] arrayByAddingObjectsFromArray:[cmd subarrayWithRange:NSMakeRange(1, cmd.count - 1)]];
     }
     return [NSString stringWithFormat:@"run%@%@: %@", as, kind,
-                                      joined([shown_env arrayByAddingObjectsFromArray:run])];
-}
-
-static NSString *truncated(NSString *s, NSUInteger max) {
-    return s.length <= max ? s : [[s substringToIndex:max - 1] stringByAppendingString:@"…"];
+                                      display_words([shown_env arrayByAddingObjectsFromArray:run])];
 }
 
 // Absolute paths shortened to their last component, e.g. the portable-ruby path brew runs under.
@@ -478,8 +532,9 @@ static NSString *requester(void) {
         argv = process_argv(pid);
     }
     if (!argv.count) return @"unknown";
-    NSString *who = [basenames(without_interpreter(argv)) componentsJoinedByString:@" "];
-    if ([who hasPrefix:@"-"]) who = [who substringFromIndex:1];  // login shell "-zsh"
+    NSMutableArray *words = [basenames(without_interpreter(argv)) mutableCopy];
+    if ([words[0] hasPrefix:@"-"]) words[0] = [words[0] substringFromIndex:1];  // login shell "-zsh"
+    NSString *who = display_words(words);
     return via.count ? [NSString stringWithFormat:@"%@ (via %@)", truncated(who, 50),
                                   [[[via reverseObjectEnumerator] allObjects] componentsJoinedByString:@" → "]]
                      : who;
@@ -499,10 +554,15 @@ static NSString *build_reason(NSString **why) {
     NSString *what = describe_sudo(argv, env, why);
     if (!what) return nil;
 
-    NSString *from = requester();
-
-    NSString *reason = [NSString stringWithFormat:@"%@ — requested by: %@", truncated(what, 100), truncated(from, 80)];
-    return truncated(reason, MAX_REASON);
+    // The command is never shortened: a cut hides exactly the part that matters
+    // (`sh -c "<100 spaces>; evil"`). If it does not fit, the password is asked for
+    // instead. Only the requester, which the caller can choose anyway, is cut.
+    NSString *sep = @" — requested by: ";
+    NSUInteger room = MAX_REASON - sep.length;
+    if (what.length + MIN_REQUESTER > room)
+        UNSURE(@"the command is too long to show in full (%lu characters)", (unsigned long)what.length);
+    NSString *from = truncated(requester(), room - what.length);
+    return [NSString stringWithFormat:@"%@%@%@", what, sep, from];
 }
 
 static BOOL in_aqua_session(void) {

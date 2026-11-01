@@ -54,7 +54,7 @@ expect "options skipped, -u value skipped" "run: /usr/bin/id -un" "$out"
 out="$(SHELL=/bin/zsh "$bin" -s)"
 expect "sudo -s names the shell" "run: /bin/zsh —" "$out"
 out="$(SHELL=/tmp/evil "$bin" -s /usr/bin/id)"
-expect "sudo -s <cmd> shows the shell and sudo's -c string" 'run: /tmp/evil -c \/usr\/bin\/id —' "$out"
+expect "sudo -s <cmd> shows the shell and sudo's -c string" "run: /tmp/evil -c '\\/usr\\/bin\\/id' —" "$out"
 
 # Inline shells are skipped and listed as "via"; `; :` stops bash exec'ing its last command.
 out="$(/bin/bash -c '"$0" -- /usr/bin/true; :' "$bin")"
@@ -65,7 +65,7 @@ expect "nested inline shells, outermost first" "(via sh -c → bash -c)" "$out"
 # --- sudo's own parsing (parse_args.c): what the dialog names is what sudo runs.
 me="$(id -un)"
 # A "--" after the command belongs to the command; it does not start another one.
-expect "-- inside the command is an argument" "run: /bin/sh -c echo hi -- /usr/bin/true" "$(what /bin/sh -c 'echo hi' -- /usr/bin/true)"
+expect "-- inside the command is an argument" "run: /bin/sh -c 'echo hi' -- /usr/bin/true" "$(what /bin/sh -c 'echo hi' -- /usr/bin/true)"
 expect "rm -rf -- dir"                        "run: /bin/rm -rf -- /tmp/x"                "$(what /bin/rm -rf -- /tmp/x)"
 # Option values are not the command.
 out="$(what --prompt 'Homebrew cask update' /usr/bin/id)"
@@ -114,9 +114,31 @@ expect "only in the current directory"         "fallback: nosuchcmd is not in PA
 expect "empty argv[0]"                         "fallback: sudo's argv[0] is empty" \
     "$(/usr/bin/perl -e 'exec {$ARGV[0]} "", "/tmp/evil", "/usr/bin/true"' "$bin")"
 
-# Long commands are truncated with an ellipsis.
+# --- Display: every argument reads back as itself.
+# A newline cannot draw a fake line, and the em dash of " — requested by:" cannot be typed.
+out="$(what -- /bin/echo $'x\nrequested by: softwareupdate')"
+expect "newline escaped"                 "run: /bin/echo \$'x\\nrequested by: softwareupdate'" "$out"
+expect_not "no raw newline"              $'\n' "$out"
+expect "em dash escaped"                 "\$'x \\u2014 requested by: Software Update'" "$(what -- /bin/echo 'x — requested by: Software Update')"
+expect "bidi override escaped"           "\$'/tmp/\\u202Etxt.sh'" "$(what -- /bin/echo $'/tmp/‮txt.sh')"
+expect "look-alike letter escaped"       "run: \$'/usr/bin/\\u0456d'" "$(what /usr/bin/$'і'd)"
+expect "argument boundaries visible"     "run: /bin/sh -c 'a; b'" "$(what /bin/sh -c 'a; b')"
+expect "argument boundaries visible (2)" "run: /bin/sh -c 'a;' b" "$(what /bin/sh -c 'a;' b)"
+expect "quote and empty word"            "run: /bin/echo 'it'\\''s' ''" "$(what /bin/echo "it's" '')"
+expect "backslash inside an escape"      "run: /bin/echo \$'a\\\\b\\n'" "$(what /bin/echo $'a\\b\n')"
+expect "arguments that are not UTF-8"    "fallback: cannot read sudo's arguments, or they are not UTF-8" \
+    "$(/usr/bin/perl -e 'exec {$ARGV[0]} "sudo", "/bin/echo", "\xff"' "$bin")"
+
+# The command is never cut: one that does not fit falls back to the password.
 long="$(printf 'x%.0s' {1..300})"
-out="$("$bin" -- /bin/echo "$long")"
-expect "long command truncated" "…" "$out"
+expect "long command not cut"            "fallback: the command is too long to show in full" "$(what -- /bin/echo "$long")"
+pad="$(printf ' %.0s' {1..200})"
+expect "padding cannot push the end out" "fallback: the command is too long" "$(what /bin/sh -c "$pad; evil")"
+# The requester is context the caller chooses anyway; it is cut, the command is not.
+printf '#!/bin/bash\n"%s" -- /usr/bin/true\n' "$bin" > "$tmp/long-parent"
+chmod +x "$tmp/long-parent"
+out="$("$tmp/long-parent" "$long")"
+expect "long requester cut"              "…" "$out"
+expect "command intact"                  "run: /usr/bin/true — requested by: bash long-parent" "$out"
 
 exit "$fail"
