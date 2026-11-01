@@ -44,10 +44,9 @@ Homebrew gives sudo can change the dialog. Changing it needs a different module.
 API; the dialog renders as "<process> is trying to <localizedReason>". A PAM
 module runs inside the sudo process, so it can read:
 
-- **sudo's own argv** via `sysctl(KERN_PROCARGS2)` on `getpid()`. The command is
-  everything after `--` (Homebrew's form: `/usr/bin/sudo [-A] -E -- <cmd>`), or
-  after sudo's leading options otherwise. With no command (`sudo -s`, `-v`)
-  sudo's flags are shown.
+- **sudo's own argv and environment** via `sysctl(KERN_PROCARGS2)` on
+  `getpid()`. See [Reading sudo's arguments](#reading-sudos-arguments) for how
+  they are turned into what the dialog says.
 - **the requester** by walking parent pids (`KERN_PROC_PID` → `e_ppid`). Inline
   shell wrappers (`sh`/`bash`/`zsh … -c`) are skipped and listed as "via"; a
   shell running a script file is kept, because the file name identifies it. For
@@ -57,6 +56,52 @@ module runs inside the sudo process, so it can read:
   command keeps full paths, since those are what is being authorized. The
   reason is capped at 160 characters; the dialog wraps long text at `/` and
   showed a ~150-character reason in full.
+
+### Reading sudo's arguments
+
+The dialog has to name what sudo will actually do, so the module parses sudo's
+argv the way sudo does. The rules are mirrored from `parse_args()` in sudo
+1.9.17p2 as Apple ships it ([`apple-oss-distributions/sudo`][sudo] tag
+`sudo-114.100.11`, `sudo/src/parse_args.c`):
+
+- Options end at the first word that is not one (`getopt_long` with `+`). A
+  `--` ends them only while they are still being read; a `--` among the
+  command's arguments (`sudo rm -rf -- dir`) belongs to the command.
+- Long options take `--opt=value` or `--opt value`, and may be abbreviated to
+  any unique prefix (`--us root`), as macOS `getopt_long` allows. Short flags
+  can be grouped and values attached (`-Eu root`, `-uroot`).
+- `VAR=value` words may appear between options. They reach the command and,
+  with macOS's default `%admin ALL = (ALL) ALL` rule (which implies `SETENV`),
+  bypass sudo's environment filter, so the dialog shows them.
+  `--preserve-env=A,B` passes those variables from the caller's environment and
+  is shown the same way. `LOGNAME`, `USER` and `USERNAME` set to the caller's own
+  name (Homebrew passes all three) are left out.
+- A command without a `/` is looked up in the caller's `PATH` like sudoers'
+  `find_path()`, and the dialog shows the file found (`sudo ls` reads
+  "run: /bin/ls"). If sudoers sets `secure_path` (macOS does not), sudo searches
+  that instead, so the path shown can differ; both lists then come from places
+  the caller cannot choose.
+- The rest of the dialog depends on the mode:
+  - `-u`/`-g` add "as postgres" or "with group staff".
+  - `sudo -s` shows the shell from `$SHELL`, which the caller chooses, and the
+    `-c` string sudo builds from the command.
+  - `sudo -i` shows the target user's login shell.
+  - `-e`/`sudoedit` show "edit:" and the absolute file paths.
+  - `-l` and `-v` say what they do.
+
+Whatever the module cannot be sure about makes it return `PAM_AUTHINFO_UNAVAIL`,
+so sudo asks for the password instead. That includes:
+
+- unknown or ambiguous options;
+- `-D`/`-R`, which change where the command runs;
+- `-h`;
+- a command found only through `.` or a relative `PATH` entry;
+- arguments that are not UTF-8;
+- an empty `argv[0]`. `KERN_PROCARGS2` cannot tell it apart from the padding in
+  front of it, so every argument would shift by one, and the module checks
+  sudo's in-memory `argv[0]` for it.
+
+[sudo]: https://github.com/apple-oss-distributions/sudo/tree/sudo-114.100.11
 
 Third-party modules that use the same API exist (for example
 [`biscuitehh/pam-watchid`](https://github.com/biscuitehh/pam-watchid)); they pass a
@@ -158,6 +203,7 @@ The same discussion shows `sshd-session` rejecting third-party modules on macOS
 | `sudo -A` | `PAM_AUTHINFO_UNAVAIL` | askpass helper |
 | No GUI session (SSH) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 | Other account / no enrolled finger | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
+| Arguments the module cannot read with certainty (see [Reading sudo's arguments](#reading-sudos-arguments)) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 
 Keeping Apple's `pam_tid.so` active *after* this module would show a second
 Touch ID dialog whenever the first is cancelled, which is why install comments
