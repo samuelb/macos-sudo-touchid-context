@@ -164,6 +164,37 @@ Protection covers; a third-party module cannot get that protection, only the
 ownership rule above. A `pam_reattach.so` under Homebrew's user-owned
 `/opt/homebrew/lib/pam` has the exposure this section describes.
 
+## Installing as root
+
+`install.sh` and `uninstall.sh` prepare everything as the user, then copy it
+into a root-owned staging directory under `/private/tmp`, show it, and run the
+privileged part as one root process (`run_as_root` in `scripts/lib.sh`):
+
+- **What is checked is what gets installed.** Earlier versions checked the
+  module in the user-owned `build/` and wrote the new `sudo_local` to a
+  user-owned `mktemp` file, and only later copied both with `sudo`. Code running
+  as the user could swap either in between, for example for a `sudo_local` with
+  `auth sufficient pam_permit.so`. The staged copies are `root:wheel 0444` in a
+  root-owned directory: the user can read them (for the diff) but not change,
+  rename or replace them.
+- **The rollback does not need sudo.** Earlier versions wrote `sudo_local`,
+  checked it, and restored the backup with a fresh `sudo cp`. If libpam rejected
+  the new file, that `sudo` failed too ("unable to initialize PAM"), so the
+  rollback could not run in exactly the case it was written for. Now the new
+  `sudo_local` is checked before it is written, with its module line pointed at
+  the staged copy of the module. Then the write, the check in place and the
+  restore all happen in the same root process. When updating, the module it
+  replaces is kept and put back as well.
+- **Fixed tool paths.** The root process calls `/usr/bin/install`, `/bin/cp`,
+  `/bin/rm` and the staged probe by absolute path. `sudo` keeps the caller's
+  `PATH`, so a plain `install` could be the caller's own program.
+
+The probe runs as root inside that process, from its staged copy. It is built
+from this repository like the module, which runs as root inside sudo anyway.
+
+`tests/check-install.sh` runs the same transaction code on temporary files with
+a stand-in probe, including each rollback path.
+
 ## Unsigned modules do load in sudo
 
 `openpam_dynamic.c:70–124` (`openpam_dlopen`): if `dlopen` of a readable module

@@ -58,18 +58,28 @@ just try-sudo    # in a new terminal: sudo -k; sudo /usr/bin/id -un
 
 `just install`:
 
-1. Asks libpam whether the built module loads, and stops if it does not.
-2. Checks that every directory above `/usr/local/pam_tid_context` is root-owned
-   and writable only by root, then installs
-   `/usr/local/pam_tid_context/pam_tid_context.so` (root:wheel, 0444) and asks
-   libpam again about the installed copy. It refuses to install otherwise: sudo
-   loads the module as root before anyone authenticates, so a user who can
-   replace it gets root without a prompt
+1. Asks libpam whether the built module loads. Checks that every directory
+   above `/usr/local/pam_tid_context` is root-owned and writable only by root,
+   and refuses to install otherwise: sudo loads the module as root before anyone
+   authenticates, so a user who can replace it gets root without a prompt
    ([details](docs/how-it-works.md#where-the-module-is-installed)).
-3. Backs up `sudo_local` to `sudo_local.bak-<timestamp>`, comments out active
-   `pam_tid.so` lines and puts this module's line in place of the first one
-   (after `pam_reattach.so`, if you use it). Re-running is idempotent.
-4. Asks libpam whether the new `sudo_local` loads, and restores the backup if not.
+2. Copies the module, the libpam probe and the new `sudo_local` into a
+   root-owned staging directory. The new `sudo_local` has active `pam_tid.so`
+   lines commented out and this module's line in place of the first one (after
+   `pam_reattach.so`, if you use it); re-running is idempotent. From here on
+   only these copies are used, so nothing running as you can swap a file
+   between the check and the install
+   ([details](docs/how-it-works.md#installing-as-root)).
+3. Shows the module's hash and a diff of `sudo_local`, and asks before changing
+   anything.
+4. In a single root process, with one `sudo`:
+   - asks libpam whether the new `sudo_local` loads;
+   - installs `/usr/local/pam_tid_context/pam_tid_context.so` (root:wheel,
+     0444) and checks it;
+   - backs up `sudo_local` to `sudo_local.bak-<timestamp>` and writes the new
+     one;
+   - checks it again in place, and restores the backup and the previous module
+     if libpam rejects it.
 
 The libpam check is `tests/probe_load.c`, which calls the policy parser sudo
 itself uses. See [Testing](docs/how-it-works.md#testing).
@@ -94,7 +104,8 @@ just uninstall
 ```
 
 Removes this module's line from `sudo_local` and re-enables the commented-out
-`pam_tid.so` line, checks the result with libpam, and only then deletes the
+`pam_tid.so` line, shows the diff and asks, then, in one root process, checks
+the result with libpam before and after writing it, and only then deletes the
 module file. Deleting the file first would lock sudo.
 
 ## Other recipes
