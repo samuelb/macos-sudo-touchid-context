@@ -6,8 +6,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-dest=/usr/local/lib/pam/pam_tid_context.so
-sudo_local=/etc/pam.d/sudo_local
+# shellcheck source=scripts/lib.sh
+source "$root/scripts/lib.sh"
 probe="$root/build/probe_load"
 
 die() { echo "uninstall: $*" >&2; exit 1; }
@@ -37,6 +37,17 @@ if grep -v '^[[:space:]]*#' "$sudo_local" 2>/dev/null | grep -q 'pam_tid_context
     die "sudo_local still references the module; not removing it"
 fi
 
-sudo rm -f "$dest"
-echo "Removed $dest. Active sudo_local lines:"
+if why="$(secure_path "$dest_dir")"; then
+    sudo rm -f "$dest"
+    sudo rmdir "$dest_dir" 2>/dev/null || true
+    echo "Removed $dest."
+else
+    echo "Not removing $dest as root: $why. Remove it by hand."
+fi
+if [[ -e "$legacy_dest" ]]; then
+    # Not deleted here: its directory may be user-writable, and a root rm in a
+    # directory the user controls can be pointed at another file.
+    echo "An older copy at $legacy_dest is no longer used; remove it: sudo rm $legacy_dest"
+fi
+echo "Active sudo_local lines:"
 grep -v '^[[:space:]]*#' "$sudo_local" 2>/dev/null | sed 's/^/    /' || true

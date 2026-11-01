@@ -131,6 +131,39 @@ project builds universal arm64 + x86_64), or a relative path. A path without a
 leading `/` is looked up under OpenPAM's module directory
 (`openpam_dynamic.c:210–248`), not the working directory.
 
+## Where the module is installed
+
+sudo loads every module named in `sudo_local` as root, during `pam_start`,
+before anyone authenticates. Apple's OpenPAM does not check who owns a module or
+the directories above it (`openpam_dynamic.c` only `dlopen`s the path; the
+`openpam_check_path_owner_perms` check of newer OpenPAM releases is not called).
+So anyone who can replace the file, or rename any directory above it, gets root
+from the next `sudo`, with no prompt. Making the file itself root-owned and 0444
+does not help when its parent can be renamed: renaming a directory only needs
+write access to the directory above it.
+
+Earlier versions installed to `/usr/local/lib/pam`. On many Macs
+`/usr/local/lib` is owned by the user (Homebrew's Intel layout, or an installer
+that created it), which made the module replaceable by any process running as
+that user. The module now goes to `/usr/local/pam_tid_context`, directly under
+`/usr/local`, which macOS creates as `root:wheel 0755`, and `install.sh` refuses
+to install unless every existing component of that path:
+
+- is not a symlink,
+- is owned by root,
+- is not writable by group or others,
+- has no ACL entry that allows anything (ACLs can grant write access that the
+  mode bits do not show).
+
+It also refuses when `pam_tid_context.so.2` exists next to the module, because
+OpenPAM tries `<name>.2` before `<name>` (`openpam_dynamic.c`). `just status`
+repeats the check for the installed copy. The rule is OpenSSH's `StrictModes`.
+
+Apple's `pam_tid.so` lives in `/usr/lib/pam`, which System Integrity
+Protection covers; a third-party module cannot get that protection, only the
+ownership rule above. A `pam_reattach.so` under Homebrew's user-owned
+`/opt/homebrew/lib/pam` has the exposure this section describes.
+
 ## Unsigned modules do load in sudo
 
 `openpam_dynamic.c:70–124` (`openpam_dlopen`): if `dlopen` of a readable module

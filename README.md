@@ -52,15 +52,20 @@ brew's process shape; a live cask upgrade has not been observed yet
 ```
 just test        # builds, checks reason formatting, checks libpam accepts the module
 just try-dialog  # optional: a real Touch ID dialog from the module, outside sudo
-just install     # installs to /usr/local/lib/pam, rewrites /etc/pam.d/sudo_local
+just install     # installs to /usr/local/pam_tid_context, rewrites /etc/pam.d/sudo_local
 just try-sudo    # in a new terminal: sudo -k; sudo /usr/bin/id -un
 ```
 
 `just install`:
 
 1. Asks libpam whether the built module loads, and stops if it does not.
-2. Installs `/usr/local/lib/pam/pam_tid_context.so` (root:wheel, 0444) and asks
-   libpam again about the installed copy.
+2. Checks that every directory above `/usr/local/pam_tid_context` is root-owned
+   and writable only by root, then installs
+   `/usr/local/pam_tid_context/pam_tid_context.so` (root:wheel, 0444) and asks
+   libpam again about the installed copy. It refuses to install otherwise: sudo
+   loads the module as root before anyone authenticates, so a user who can
+   replace it gets root without a prompt
+   ([details](docs/how-it-works.md#where-the-module-is-installed)).
 3. Backs up `sudo_local` to `sudo_local.bak-<timestamp>`, comments out active
    `pam_tid.so` lines and puts this module's line in place of the first one
    (after `pam_reattach.so`, if you use it). Re-running is idempotent.
@@ -96,7 +101,7 @@ module file. Deleting the file first would lock sudo.
 
 | Recipe | Does |
 |---|---|
-| `just status` | Active `sudo_local` lines; installed vs built module hash |
+| `just status` | Active `sudo_local` lines; installed vs built module hash; whether only root can replace the installed module |
 | `just screenshot [stock]` | Regenerates `docs/images/dialog.png`, or `dialog-stock.png` with `stock` (needs `pam_tid.so` as the active `sudo_local` line). Shows a dialog; wait for the capture message before touching |
 | `just logs [minutes]` | The module's unified-log lines (uses `/usr/bin/log`; in zsh, `log` is a builtin) |
 | `just lint` | shellcheck the scripts |
