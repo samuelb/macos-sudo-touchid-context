@@ -53,9 +53,21 @@ module runs inside the sudo process, so it can read:
   an interpreter (`ruby`, `python`, `perl`, `node`, …) the interpreter and its
   flags are dropped so the script names the requester.
 - Absolute paths in the requester are shortened to their last component. The
-  command keeps full paths, since those are what is being authorized. The
-  reason is capped at 160 characters; the dialog wraps long text at `/` and
-  showed a ~150-character reason in full.
+  command keeps full paths, since those are what is being authorized.
+- Every argument is written so that it reads back as exactly one argument with
+  exactly its characters, in bash/zsh quoting:
+  - Only printable ASCII is shown as it is. Anything else is escaped inside
+    `$'…'`: newlines and other control characters, bidi overrides such as
+    U+202E, zero-width and format characters, look-alike letters (Cyrillic
+    `і` in `/usr/bin/іd`). So an argument cannot draw a fake "requested by:"
+    line, reorder what is shown, or pass for another path.
+  - A word with a space or shell punctuation, or an empty word, is
+    single-quoted, so `sh -c 'a; b'` and `sh -c 'a;' b` look different.
+- The reason is capped at 160 characters; the dialog wraps long text at `/` and
+  showed a ~150-character reason in full. The command is never shortened,
+  because a cut hides exactly the part that matters (`sh -c "<200 spaces>;
+  evil"`). When it does not fit, the module steps aside and sudo asks for the
+  password. Only the requester is cut, with "…".
 
 ### Reading sudo's arguments
 
@@ -100,6 +112,7 @@ so sudo asks for the password instead. That includes:
 - an empty `argv[0]`. `KERN_PROCARGS2` cannot tell it apart from the padding in
   front of it, so every argument would shift by one, and the module checks
   sudo's in-memory `argv[0]` for it.
+- a command too long to show in full (the 160-character cap above).
 
 [sudo]: https://github.com/apple-oss-distributions/sudo/tree/sudo-114.100.11
 
