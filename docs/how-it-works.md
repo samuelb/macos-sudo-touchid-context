@@ -322,6 +322,28 @@ from this repository like the module, which runs as root inside sudo anyway.
 `tests/check-install.sh` runs the same transaction code on temporary files with
 a stand-in probe, including each rollback path.
 
+## Installing with Homebrew
+
+The formula (`Formula/pam-tid-context.rb`, in a tap that is this repository)
+builds the module and runs `scripts/package.sh`, which puts the scripts and the
+built module into the keg's `libexec` in a checkout's layout (`scripts/` next
+to `build/`). `pam-tid-context` runs the same scripts as the just recipes, so
+the install is the same: the location check, the root-owned copies, the libpam
+checks and the rollback.
+
+Homebrew itself never changes sudo. It runs as the user and does not call sudo
+from a formula, and the keg is user-owned, so a `sudo_local` line pointing into
+it would be the exposure described in
+[Where the module is installed](#where-the-module-is-installed). This also
+means `brew upgrade` and `brew uninstall` cannot leave `sudo_local` naming a
+file that is gone: sudo loads the copy in `/usr/local/pam_tid_context` until
+`pam-tid-context install` replaces it or `pam-tid-context uninstall` removes
+it.
+
+`tests/check-package.sh` builds that layout in a temporary directory and checks
+that each command finds its files, also through a bin link as Homebrew makes
+them.
+
 ## Unsigned modules do load in sudo
 
 `openpam_dynamic.c:70–124` (`openpam_dlopen`): if `dlopen` of a readable module
@@ -379,6 +401,7 @@ which the requester walk shows as `brew.rb <args>`.
 |---|---|---|
 | `tests/check-reasons.sh` (via `build/reason_test`) | command parsing and requester formatting for real argv/parent shapes | nothing |
 | `tests/probe_load.c` | the system libpam accepts a module or a whole policy file — the check sudo's `pam_start` performs | nothing |
+| `tests/check-package.sh` | the package layout from `scripts/package.sh`, and that `pam-tid-context` finds its scripts and the module there | nothing |
 | `tests/harness.c` (`just try-dialog`) | a real Touch ID dialog with the reason, outside sudo | Touch ID |
 | `just try-sudo` | the installed module inside setuid sudo, including the euid switch | install |
 
