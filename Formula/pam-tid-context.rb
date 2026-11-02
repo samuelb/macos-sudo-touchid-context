@@ -1,8 +1,8 @@
 # Homebrew formula. This repository doubles as its tap:
 #
-#   brew tap laurigates/sudo-touchid-context https://github.com/laurigates/macos-sudo-touchid-context
-#   brew trust --formula laurigates/sudo-touchid-context/pam-tid-context
-#   brew install --HEAD laurigates/sudo-touchid-context/pam-tid-context
+#   brew tap samuelb/sudo-touchid-context https://github.com/samuelb/macos-sudo-touchid-context
+#   brew trust --formula samuelb/sudo-touchid-context/pam-tid-context
+#   brew install --HEAD samuelb/sudo-touchid-context/pam-tid-context
 #
 # The formula only builds the module and installs the pam-tid-context command.
 # It does not touch sudo: Homebrew runs as the user, and sudo must never load a
@@ -10,10 +10,10 @@
 # to the root-owned /usr/local/pam_tid_context and switches sudo_local to it.
 class PamTidContext < Formula
   desc "Touch ID for sudo with a dialog that names the command and who asked"
-  homepage "https://github.com/laurigates/macos-sudo-touchid-context"
+  homepage "https://github.com/samuelb/macos-sudo-touchid-context"
   license "MIT"
   # Only HEAD until the first release tag; then add url and sha256 here.
-  head "https://github.com/laurigates/macos-sudo-touchid-context.git", branch: "main"
+  head "https://github.com/samuelb/macos-sudo-touchid-context.git", branch: "main"
 
   depends_on "just" => :build
   depends_on macos: :sonoma

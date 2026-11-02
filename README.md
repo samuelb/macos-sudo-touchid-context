@@ -102,9 +102,9 @@ command; it does not change sudo. Homebrew only loads a formula from another
 tap once you trust it.
 
 ```
-brew tap laurigates/sudo-touchid-context https://github.com/laurigates/macos-sudo-touchid-context
-brew trust --formula laurigates/sudo-touchid-context/pam-tid-context
-brew install --HEAD laurigates/sudo-touchid-context/pam-tid-context
+brew tap samuelb/sudo-touchid-context https://github.com/samuelb/macos-sudo-touchid-context
+brew trust --formula samuelb/sudo-touchid-context/pam-tid-context
+brew install --HEAD samuelb/sudo-touchid-context/pam-tid-context
 pam-tid-context install  # with a root shell open: the same steps as `just install`
 ```
 
