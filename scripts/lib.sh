@@ -383,3 +383,19 @@ status_summary() {
         echo "next:      $root_shell: $cmd install"
     fi
 }
+
+# status_safety <module> <command>: whether anyone but root could replace the
+# installed module or a folder above it (secure_path), in words for status.sh.
+# Uninstall is the way out: it takes the module out of sudo_local even where it
+# leaves the file for removal by hand.
+status_safety() {
+    local why
+    if why="$(secure_path "$1")"; then
+        echo "safety:    OK: only root can change the module or the folders it is in"
+    else
+        echo "safety:    NOT SAFE: $why."
+        echo "           A program running as you could replace the module and get root"
+        echo "           at your next sudo. Make that path changeable by root only, or"
+        echo "           run $2 uninstall so that sudo stops loading it."
+    fi
+}

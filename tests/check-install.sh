@@ -262,4 +262,11 @@ sl "auth       sufficient     $old"
 expect "old location"                     "status:    installed at an old location, $old" "$(summary "$st/same.so" just)"
 expect "old location: install moves it"   "run: just install (moves it to $inst)" "$(summary "$st/same.so" just)"
 
+# --- status_safety: whether only root can replace the installed module.
+expect "safe path: OK"                    "safety:    OK: only root can change the module" "$(status_safety /usr/bin/true pam-tid-context)"
+unsafe="$(status_safety "$HOME/pam/pam_tid_context.so" pam-tid-context)"
+expect "user-owned path: NOT SAFE"        "safety:    NOT SAFE: $HOME is owned by uid" "$unsafe"
+expect "NOT SAFE: what it means"          "could replace the module and get root"$'\n'"           at your next sudo." "$unsafe"
+expect "NOT SAFE: the way out"            "run pam-tid-context uninstall so that sudo stops loading it." "$unsafe"
+
 exit "$fail"
