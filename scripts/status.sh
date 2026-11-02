@@ -1,7 +1,8 @@
 #!/bin/bash
 # Says whether sudo uses the module, whether the one built next to this script
-# differs from the installed one, and what to run next; then shows the active
-# sudo_local lines, both hashes, and whether only root can replace the module.
+# differs from the installed one, what to run next, and whether only root can
+# replace the installed module; then shows the active sudo_local lines and both
+# hashes.
 # Run by `just status` and `pam-tid-context status`. Changes nothing.
 set -uo pipefail
 
@@ -19,12 +20,10 @@ brew=""
 [[ "$root" == */Cellar/pam-tid-context/* ]] && brew=yes
 
 status_summary "$sudo_local" "$dest" "$root/build/$module" "$cmd" "$brew"
+if [[ -e "$dest" ]]; then status_safety "$dest" "$cmd"; fi
 echo
 echo "sudo_local (active lines):"
 grep -v '^[[:space:]]*#' "$sudo_local" 2>/dev/null | sed 's/^/    /' || echo "    (none)"
 echo "installed: $(hash "$dest") ($dest)"
 echo "built:     $(hash "$root/build/$module")"
-if [[ -e "$dest" ]]; then
-    if why="$(secure_path "$dest")"; then echo "path:      only root can replace it"; else echo "path:      NOT SAFE: $why"; fi
-fi
 if [[ -e "$legacy_dest" ]]; then echo "old copy:  $legacy_dest (no longer used; remove it)"; fi
