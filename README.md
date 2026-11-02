@@ -39,7 +39,8 @@ brew's process shape; a live cask upgrade has not been observed yet
 ## Requirements
 
 - macOS 14 or later (`/etc/pam.d/sudo_local` exists from macOS 14)
-- Xcode Command Line Tools (`clang`), [`just`](https://github.com/casey/just)
+- Xcode Command Line Tools (`clang`), and [`just`](https://github.com/casey/just)
+  for a checkout (the Homebrew formula installs it)
 - A Mac with Touch ID and at least one enrolled finger
 
 ## Install
@@ -90,6 +91,30 @@ just try-sudo    # in a new terminal: sudo -k; sudo /usr/bin/id -un
 The libpam check is `tests/probe_load.c`, which calls the policy parser sudo
 itself uses. See [Testing](docs/how-it-works.md#testing).
 
+### With Homebrew
+
+The formula in `Formula/` builds the module and installs a `pam-tid-context`
+command; it does not change sudo. Homebrew only loads a formula from another
+tap once you trust it.
+
+```
+brew tap laurigates/sudo-touchid-context https://github.com/laurigates/macos-sudo-touchid-context
+brew trust --formula laurigates/sudo-touchid-context/pam-tid-context
+brew install --HEAD laurigates/sudo-touchid-context/pam-tid-context
+pam-tid-context install  # with a root shell open: the same steps as `just install`
+```
+
+sudo never loads the module from Homebrew's folders: they belong to you, so
+anything running as you could replace it there. `pam-tid-context install`
+copies it to `/usr/local/pam_tid_context`, as `just install` does. So an
+upgrade changes nothing for sudo until you install again:
+
+```
+brew upgrade --fetch-HEAD pam-tid-context
+pam-tid-context status   # installed module vs. this build
+pam-tid-context install
+```
+
 ## Recovery
 
 If sudo prints `sudo: unable to initialize PAM: No such file or directory`, the
@@ -114,11 +139,15 @@ install replaced (nothing, if it replaced nothing), shows the diff and asks, the
 the result with libpam before and after writing it, and only then deletes the
 module file. Deleting the file first would lock sudo.
 
+With Homebrew, run `pam-tid-context uninstall` before `brew uninstall
+pam-tid-context`. In the other order, sudo keeps using the installed copy;
+to remove it, install the formula again and run `pam-tid-context uninstall`.
+
 ## Other recipes
 
 | Recipe | Does |
 |---|---|
-| `just status` | Active `sudo_local` lines; installed vs built module hash; whether only root can replace the installed module |
+| `just status` | Active `sudo_local` lines; installed vs built module hash; whether only root can replace the installed module. With Homebrew: `pam-tid-context status` |
 | `just screenshot [stock]` | Regenerates `docs/images/dialog.png`, or `dialog-stock.png` with `stock` (needs `pam_tid.so` as the active `sudo_local` line). Shows a dialog; wait for the capture message before touching |
 | `just logs [minutes]` | The module's unified-log lines (uses `/usr/bin/log`; in zsh, `log` is a builtin) |
 | `just lint` | shellcheck the scripts |

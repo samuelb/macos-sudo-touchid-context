@@ -1,4 +1,4 @@
-# Shared by install.sh, uninstall.sh, `just status` and tests/check-install.sh.
+# Shared by install.sh, uninstall.sh, status.sh and tests/check-install.sh.
 # Sourced, not run.
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # the variables are used by the scripts that source this
