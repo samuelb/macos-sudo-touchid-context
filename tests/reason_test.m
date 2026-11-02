@@ -1,5 +1,6 @@
-// Prints the reason string the module would show, without prompting Touch ID, or
-// "fallback: <why>" when the module would leave sudo to ask for the password.
+// Prints the reason string the module would show, without prompting Touch ID (a
+// warning when it cannot be sure what sudo will do), or "fallback: <why>" when the
+// module would leave sudo to ask for the password.
 // Invoke it with sudo-shaped arguments from different parents to exercise the
 // command parser and the requester walk (see tests/check-reasons.sh).
 #include "../src/pam_tid_context.m"

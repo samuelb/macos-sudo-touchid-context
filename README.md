@@ -28,6 +28,10 @@ the test harness with the argv and parent process brew gives sudo.
 Inline shell wrappers are skipped when naming the requester, so a job started via
 `zsh -c '…'` shows as `claude (via zsh -c)` rather than the shell's command line.
 
+When the module cannot tell for sure what sudo will run, the dialog says so
+first: "run an UNVERIFIED command (<reason>), called as: <sudo's arguments>"
+([details](docs/how-it-works.md#reading-sudos-arguments)).
+
 ## Status
 
 Working on macOS 26.6 (Apple silicon) for sudo: Touch ID approval, and cancel

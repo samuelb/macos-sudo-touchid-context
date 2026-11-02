@@ -22,6 +22,8 @@
 #define MAX_REASON 160
 // Room kept for the requester when the command is long.
 #define MIN_REQUESTER 16
+// Longest reason a warning shows before cutting it.
+#define MAX_WHY 40
 #define LOG os_log_create("pam_tid_context", "auth")
 
 // Return nil from a function that has an `NSString **why` parameter, saying why.
@@ -92,8 +94,9 @@ static pid_t parent_of(pid_t pid) {
     return kp.kp_eproc.e_ppid;
 }
 
-// Only for the requester, never for the command. Its input is ASCII after
-// display_word, plus this file's own "→", so no character is split.
+// Never for the command of a normal dialog, only for the requester and the parts of
+// a warning. Its input is ASCII after display_word, plus this file's own "→", so no
+// character is split.
 static NSString *truncated(NSString *s, NSUInteger max) {
     return s.length <= max ? s : [[s substringToIndex:max - 1] stringByAppendingString:@"…"];
 }
@@ -163,9 +166,10 @@ static NSString *display_words(NSArray<NSString *> *words) {
 // - "--" ends the options only while options are still being read, so a "--" among
 //   the command's own arguments belongs to the command.
 //
-// Whatever this is not sure about returns nil, and the module steps aside so sudo
-// asks for the password: the dialog must never name another command than the one
-// sudo runs.
+// Whatever this is not sure about returns nil with the reason, and the dialog
+// becomes a warning (warning_reason): it must never present a command as certain
+// unless it is the one sudo runs. Reasons quote caller-chosen text with
+// display_word, because the warning shows them.
 
 enum { NO_ARG, REQ_ARG, OPT_ARG };
 enum { OPT_HOST = 256 };
@@ -250,7 +254,7 @@ static NSString *resolve_command(NSString *word, NSDictionary<NSString *, id> *e
     if ([word containsString:@"/"]) {
         if ([word hasPrefix:@"/"]) return word;
         NSString *cwd = working_directory();
-        if (!cwd) UNSURE(@"no working directory for %@", word);
+        if (!cwd) UNSURE(@"no working directory for %@", display_word(word));
         return [NSString stringWithFormat:@"%@/%@", cwd, word];
     }
     id path = env[@"PATH"];
@@ -258,14 +262,14 @@ static NSString *resolve_command(NSString *word, NSDictionary<NSString *, id> *e
     BOOL dot = NO;
     for (NSString *dir in [path componentsSeparatedByString:@":"]) {
         if (!dir.length || [dir isEqualToString:@"."]) { dot = YES; continue; }
-        if (![dir hasPrefix:@"/"]) UNSURE(@"PATH has a relative entry (%@)", dir);
+        if (![dir hasPrefix:@"/"]) UNSURE(@"relative PATH entry %@", display_word(dir));
         NSString *candidate = [NSString stringWithFormat:@"%@/%@", dir, word];
         struct stat st;
         if (stat(candidate.fileSystemRepresentation, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 0111))
             return candidate;
     }
-    if (dot) UNSURE(@"%@ is not in PATH outside the current directory", word);
-    UNSURE(@"%@ is not in PATH", word);
+    if (dot) UNSURE(@"%@ could only come from . in PATH", display_word(word));
+    UNSURE(@"%@ is not in PATH", display_word(word));
 }
 
 // The single -c argument sudo builds for `sudo -s/-i <command>`: a backslash before
@@ -315,7 +319,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
                     if (!name.length) continue;
                     id val = env[name];
                     if ([name containsString:@"="] || val == [NSNull null]) {
-                        unsure = [NSString stringWithFormat:@"--preserve-env=%@", v];
+                        unsure = [NSString stringWithFormat:@"--preserve-env=%@", display_word(v)];
                         return NO;
                     }
                     if (val) [env_add addObject:[NSString stringWithFormat:@"%@=%@", name, val]];
@@ -358,7 +362,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
             NSRange eq = [body rangeOfString:@"="];
             NSString *name = eq.location == NSNotFound ? body : [body substringToIndex:eq.location];
             const long_opt *o = find_long_opt(name, first_long);
-            if (!o) UNSURE(@"unknown or ambiguous option --%@", name);
+            if (!o) UNSURE(@"unknown or ambiguous option --%@", display_word(name));
             i++;
             NSString *value = nil;
             if (eq.location != NSNotFound) {
@@ -376,7 +380,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
             for (NSUInteger k = 1; k < w.length; k++) {
                 unichar c = [w characterAtIndex:k];
                 int kind = short_opt(shorts, c);
-                if (kind < 0) UNSURE(@"unknown option -%C", c);
+                if (kind < 0) UNSURE(@"unknown option -%@", display_word([NSString stringWithCharacters:&c length:1]));
                 NSString *rest = k + 1 < w.length ? [w substringFromIndex:k + 1] : nil;
                 if (kind == NO_ARG) {
                     if (!apply(c, nil)) UNSURE(@"%@", unsure);
@@ -447,7 +451,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
             NSMutableArray *files = [NSMutableArray array];
             NSString *cwd = working_directory();
             for (NSString *f in cmd) {
-                if (![f hasPrefix:@"/"] && !cwd) UNSURE(@"no working directory for %@", f);
+                if (![f hasPrefix:@"/"] && !cwd) UNSURE(@"no working directory for %@", display_word(f));
                 [files addObject:[f hasPrefix:@"/"] ? f : [NSString stringWithFormat:@"%@/%@", cwd, f]];
             }
             return [NSString stringWithFormat:@"edit%@: %@", as, display_words(files)];
@@ -464,7 +468,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
                 NSString *digits = [target substringFromIndex:1];
                 if (!digits.length || [digits rangeOfCharacterFromSet:
                         [NSCharacterSet decimalDigitCharacterSet].invertedSet].location != NSNotFound)
-                    UNSURE(@"bad uid %@", target);
+                    UNSURE(@"bad uid %@", display_word(target));
                 pw = getpwuid((uid_t)strtoul(digits.UTF8String, NULL, 10));
             } else {
                 pw = getpwnam(target.UTF8String);
@@ -481,7 +485,7 @@ static NSString *describe_sudo(NSArray<NSString *> *argv, NSDictionary<NSString 
                 if (pw && pw->pw_shell) sh = @(pw->pw_shell);
             }
         }
-        if (![sh hasPrefix:@"/"]) UNSURE(@"shell %@ is not an absolute path", sh);
+        if (![sh hasPrefix:@"/"]) UNSURE(@"shell %@ is not an absolute path", sh ? display_word(sh) : @"(none)");
         run = cmd.count ? @[sh, @"-c", sudo_shell_command(cmd)] : @[sh];
     } else {
         NSString *path = resolve_command(cmd[0], env, why);
@@ -540,29 +544,80 @@ static NSString *requester(void) {
                      : who;
 }
 
-// The dialog text, or nil with the reason in *why when it cannot say for sure what
-// sudo will do.
-static NSString *build_reason(NSString **why) {
+static NSString *const REQUESTED_BY = @" — requested by: ";
+
+// display_word for bytes that may not be UTF-8; those are shown as \xHH escapes.
+static NSString *display_bytes(const char *s) {
+    NSString *w = [NSString stringWithUTF8String:s];
+    if (w) return display_word(w);
+    NSMutableString *out = [NSMutableString stringWithString:@"$'"];
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '\\' || *p == '\'') [out appendFormat:@"\\%c", *p];
+        else if (*p >= 0x20 && *p <= 0x7e) [out appendFormat:@"%c", *p];
+        else [out appendFormat:@"\\x%02X", *p];
+    }
+    [out appendString:@"'"];
+    return out;
+}
+
+// How sudo was called, from its own memory: an empty argv[0] or bytes that are not
+// UTF-8 are shown as they are. argv[0] is shortened to its last path component.
+static NSString *sudo_call(void) {
+    int argc = *_NSGetArgc();
+    char **argv = *_NSGetArgv();
+    if (argc < 1 || !argv || !argv[0]) return nil;
+    NSMutableArray *words = [NSMutableArray arrayWithCapacity:argc];
+    const char *name = strrchr(argv[0], '/');
+    [words addObject:display_bytes(name ? name + 1 : argv[0])];
+    for (int i = 1; i < argc && argv[i]; i++) [words addObject:display_bytes(argv[i])];
+    return [words componentsJoinedByString:@" "];
+}
+
+// What sudo will do, as dialog text, or nil with the reason in *why.
+static NSString *sudo_description(NSString **why) {
     // KERN_PROCARGS2 cannot tell an empty argv[0] from the NUL padding in front of
     // it, which would shift every argument by one; sudo itself sees the real argv.
     char **real_argv = *_NSGetArgv();
     if (*_NSGetArgc() < 1 || !real_argv[0] || !real_argv[0][0]) UNSURE(@"sudo's argv[0] is empty");
     NSDictionary *env = nil;
     NSArray *argv = process_args(getpid(), YES, &env);
-    if (!argv) UNSURE(@"cannot read sudo's arguments, or they are not UTF-8");
+    if (!argv) UNSURE(@"arguments not readable or not UTF-8");
     if ((int)argv.count != *_NSGetArgc()) UNSURE(@"sudo's argument count does not match");
-    NSString *what = describe_sudo(argv, env, why);
-    if (!what) return nil;
+    return describe_sudo(argv, env, why);
+}
 
-    // The command is never shortened: a cut hides exactly the part that matters
-    // (`sh -c "<100 spaces>; evil"`). If it does not fit, the password is asked for
-    // instead. Only the requester, which the caller can choose anyway, is cut.
-    NSString *sep = @" — requested by: ";
-    NSUInteger room = MAX_REASON - sep.length;
-    if (what.length + MIN_REQUESTER > room)
-        UNSURE(@"the command is too long to show in full (%lu characters)", (unsigned long)what.length);
-    NSString *from = truncated(requester(), room - what.length);
-    return [NSString stringWithFormat:@"%@%@%@", what, sep, from];
+// The dialog when the module cannot say for sure what sudo will do: a warning with
+// the reason, how sudo was called (a clue to find out more, but not a statement of
+// what runs), and the requester. The warning comes first and is never cut away;
+// the other parts are cut to fit.
+static NSString *warning_reason(NSString *why, NSString *call, NSString *from) {
+    NSString *start = @"run an UNVERIFIED command (", *label = @"), called as: ";
+    NSString *w = truncated(why, MAX_WHY);
+    NSUInteger room = MAX_REASON - start.length - w.length - label.length - REQUESTED_BY.length;
+    NSString *c = truncated(call, room - MIN(from.length, MIN_REQUESTER));
+    NSString *r = truncated(from, room - c.length);
+    return [NSString stringWithFormat:@"%@%@%@%@%@%@", start, w, label, c, REQUESTED_BY, r];
+}
+
+// The dialog text. When the module cannot say for sure what sudo will do, *why says
+// why and the text is a warning. nil only when not even sudo's arguments are there.
+static NSString *build_reason(NSString **why) {
+    *why = nil;
+    NSString *what = sudo_description(why);
+    NSString *from = requester();
+
+    // The command is never shortened in a normal dialog: a cut hides exactly the
+    // part that matters (`sh -c "<100 spaces>; evil"`). If it does not fit, the
+    // dialog becomes a warning. Only the requester, which the caller can choose
+    // anyway, is cut.
+    NSUInteger room = MAX_REASON - REQUESTED_BY.length;
+    if (what) {
+        if (what.length + MIN_REQUESTER <= room)
+            return [NSString stringWithFormat:@"%@%@%@", what, REQUESTED_BY, truncated(from, room - what.length)];
+        *why = [NSString stringWithFormat:@"too long to show in full: %lu characters", (unsigned long)what.length];
+    }
+    NSString *call = sudo_call();
+    return call ? warning_reason(*why ?: @"unknown reason", call, from) : nil;
 }
 
 static BOOL in_aqua_session(void) {
@@ -630,6 +685,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
             os_log(LOG, "skip: %{public}@; sudo asks for the password instead", why);
             return PAM_AUTHINFO_UNAVAIL;
         }
+        if (why) os_log(LOG, "unverified: %{public}@; the dialog shows a warning", why);
 
         // coreauthd evaluates for the caller's effective uid; inside setuid sudo that is
         // root, who has no enrolled fingers ("No identities are enrolled"). Drop to the
