@@ -94,6 +94,20 @@ just try-sudo    # in a new terminal: sudo -k; sudo /usr/bin/id -un
 The libpam check is `tests/probe_load.c`, which calls the policy parser sudo
 itself uses. See [Testing](docs/how-it-works.md#testing).
 
+## Options
+
+Options go after the module path on its line in `/etc/pam.d/sudo_local`:
+
+```
+auth       sufficient     /usr/local/pam_tid_context/pam_tid_context.so timeout=30
+```
+
+| Option | Does |
+|---|---|
+| `timeout=<seconds>` | How long the dialog waits for an answer before sudo asks for the password: 5 to 600, default 60. Other values are ignored and logged |
+
+Re-running `just install` keeps them.
+
 ## Recovery
 
 If sudo prints `sudo: unable to initialize PAM: No such file or directory`, the

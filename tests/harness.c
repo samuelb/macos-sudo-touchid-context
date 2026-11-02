@@ -1,7 +1,9 @@
 // Loads the module and calls its pam_sm_authenticate directly with a real PAM
 // handle: no /etc/pam.d entry and no sudo involved. Shows a real Touch ID dialog.
 // Pass sudo-shaped arguments (e.g. `harness -E -- /usr/sbin/installer -pkg x.pkg`)
-// so the module parses this process's argv the way it would parse sudo's.
+// so the module parses this process's argv the way it would parse sudo's. Module
+// options, the words after the module path on a sudo_local line, come from
+// MODULE_OPTIONS (e.g. MODULE_OPTIONS=timeout=5).
 //
 // Runs as the invoking user, so it does not exercise the euid switch that only
 // happens inside setuid sudo; `just try-sudo` covers that.
@@ -11,6 +13,7 @@
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 typedef int (*pam_sm_fn)(pam_handle_t *, int, int, const char **);
@@ -31,7 +34,12 @@ int main(void) {
     int rc = pam_start("pam_tid_context_harness", getpwuid(getuid())->pw_name, &conv, &pamh);
     if (rc != PAM_SUCCESS) { fprintf(stderr, "pam_start: %d\n", rc); return 2; }
 
-    rc = auth(pamh, 0, 0, NULL);
+    const char *opts[16];
+    int nopts = 0;
+    char *spec = getenv("MODULE_OPTIONS") ? strdup(getenv("MODULE_OPTIONS")) : NULL;
+    for (char *w = spec ? strtok(spec, " \t") : NULL; w && nopts < 16; w = strtok(NULL, " \t")) opts[nopts++] = w;
+
+    rc = auth(pamh, 0, nopts, opts);
     printf("pam_sm_authenticate -> %d (%s)\n", rc, pam_strerror(pamh, rc));
     pam_end(pamh, rc);
     return rc == PAM_SUCCESS ? 0 : 1;

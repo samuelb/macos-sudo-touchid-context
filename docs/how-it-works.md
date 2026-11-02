@@ -162,6 +162,30 @@ the console user (`SCDynamicStoreCopyConsoleUser`) are the same account, because
 that check another account running sudo in your GUI session could be approved
 with your fingerprint.
 
+It also requires that sudo itself runs in a desktop session. Someone being logged
+in at the console is not enough: a sudo over ssh would show its dialog on the
+Mac's screen, for whoever sits there to approve, while the ssh session waits.
+Apple's `pam_tid` asks launchd whether the process is in the `Aqua` session
+(`vproc_swap_string(…, VPROC_GSK_MGR_NAME, …)`, lines 87–100). This module asks
+for the security session instead (`SessionGetInfo`, public API in
+`Security/AuthSession.h`) and requires graphic access and no remote flag. The two
+differ in tmux. Observed on macOS 27.2: a tmux server started from a desktop
+terminal is in launchd's `Background` session, so Apple's check fails there,
+while its security session is still the desktop's (attributes `0x6030`, graphic
+access and a tty). `pam_reattach` works around Apple's check by moving sudo into
+the desktop's launchd session; it does not change the security session
+(`src/reattach.c` only swaps the bootstrap port), so a sudo over ssh still falls
+back to the password with `pam_reattach` in the stack.
+
+If nobody answers the dialog within 60 seconds, the module closes it and returns
+`PAM_AUTH_ERR`, so sudo asks for the password instead of waiting forever. The
+module option `timeout=<seconds>` on its `sudo_local` line changes that, from 5
+to 600 seconds. It is read from the `pam.d` line, which only root can edit, not
+from the environment, which the program calling sudo chooses. A value that is not
+a whole number in that range is ignored and logged, and the default stays. Install
+keeps the option when it updates the line. To see a timeout without sudo:
+`MODULE_OPTIONS=timeout=5 just try-dialog`.
+
 ## A module that fails to load locks sudo
 
 In OpenPAM, a module that cannot be loaded makes the whole service fail to
@@ -323,7 +347,8 @@ The same discussion shows `sshd-session` rejecting third-party modules on macOS
 | Touch ID approved | `PAM_SUCCESS` | runs the command |
 | Cancel / "Use Password" | `PAM_AUTH_ERR` | terminal password prompt (no second dialog, because `pam_tid.so` is commented out) |
 | `sudo -A` | `PAM_AUTHINFO_UNAVAIL` | askpass helper |
-| No GUI session (SSH) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
+| No answer within the timeout (60 seconds, or `timeout=`) | `PAM_AUTH_ERR` (the dialog closes) | terminal password prompt |
+| sudo not in a desktop session (ssh) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 | Other account / no enrolled finger | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 | Arguments the module cannot read with certainty (see [Reading sudo's arguments](#reading-sudos-arguments)) | warning dialog, then `PAM_SUCCESS` or `PAM_AUTH_ERR` | runs the command, or the terminal password prompt |
 | No argv at all | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |

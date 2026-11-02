@@ -191,6 +191,11 @@ expect_rewrite "indentation, absolute path and options kept" \
 installed="$(printf '%s\n' $'auth       sufficient     pam_tid.so\nauth       required       pam_deny.so' | rewrite_for_install "$d")"
 expect_eq "re-install keeps the position" "$installed" "$(printf '%s\n' "$installed" | rewrite_for_install "$d")"
 
+# A module option added to this module's line by hand survives a re-install.
+expect_eq "re-install keeps this module's options" \
+    "${m}auth       sufficient     pam_tid.so"$'\n'"$ours timeout=30" \
+    "$(printf '%s\n' "${m}auth       sufficient     pam_tid.so" "$ours timeout=30" | rewrite_for_install "$d")"
+
 # An install from before the marker, at the old path.
 old=$'#auth       sufficient     pam_tid.so\nauth       sufficient     /usr/local/lib/pam/pam_tid_context.so'
 expect_eq "old install: path updated in place" \

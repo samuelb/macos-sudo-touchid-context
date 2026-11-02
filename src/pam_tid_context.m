@@ -1,6 +1,6 @@
 // pam_tid_context: Touch ID PAM module whose dialog names the command being
-// authorized and the process that asked. Mirrors Apple's pam_tid.c guards (GUI
-// session, sudo -A askpass) but authenticates via LAContext so it can set
+// authorized and the process that asked. Has the same guards as Apple's pam_tid.c
+// (desktop session, sudo -A askpass) but authenticates via LAContext so it can set
 // localizedReason. See docs/how-it-works.md.
 
 #import <Foundation/Foundation.h>
@@ -15,6 +15,7 @@
 #include <pwd.h>
 #include <unistd.h>
 #include <SystemConfiguration/SystemConfiguration.h>
+#include <Security/AuthSession.h>
 #include <os/log.h>
 #include <errno.h>
 
@@ -24,6 +25,11 @@
 #define MIN_REQUESTER 16
 // Longest reason a warning shows before cutting it.
 #define MAX_WHY 40
+// Seconds the dialog waits for an answer before sudo asks for the password instead,
+// unless the module option timeout=<seconds> sets another value in this range.
+#define DEFAULT_TIMEOUT 60
+#define MIN_TIMEOUT 5
+#define MAX_TIMEOUT 600
 #define LOG os_log_create("pam_tid_context", "auth")
 
 // Return nil from a function that has an `NSString **why` parameter, saying why.
@@ -620,12 +626,18 @@ static NSString *build_reason(NSString **why) {
     return call ? warning_reason(*why ?: @"unknown reason", call, from) : nil;
 }
 
-static BOOL in_aqua_session(void) {
-    // Same intent as pam_tid's VPROCMGR_SESSION_AQUA check: only prompt when a GUI is there.
-    uid_t console_uid = (uid_t)-1;
-    CFStringRef user = SCDynamicStoreCopyConsoleUser(NULL, &console_uid, NULL);
-    if (user) CFRelease(user);
-    return user != NULL && console_uid != (uid_t)-1;
+// Only prompt when sudo itself runs in a desktop session, not merely while someone
+// is logged in at the console: otherwise a sudo over ssh shows its dialog on the
+// Mac's screen, for whoever sits there to approve. Apple's pam_tid asks launchd
+// whether the process is in the "Aqua" session. This asks for the security session
+// instead (SessionGetInfo): pam_reattach, which moves sudo into the desktop's
+// launchd session so that Touch ID works in tmux, does not change it, so a sudo over
+// ssh still falls back to the password with pam_reattach in the stack.
+static BOOL in_desktop_session(SessionAttributeBits *attrs) {
+    SecuritySessionId sid;
+    *attrs = 0;
+    if (SessionGetInfo(callerSecuritySession, &sid, attrs) != errSessionSuccess) return NO;
+    return (*attrs & sessionHasGraphicAccess) && !(*attrs & sessionIsRemote);
 }
 
 // Only accept the fingerprint for the user sitting at the console, and only when
@@ -639,7 +651,33 @@ static BOOL target_is_console_user(const char *pam_user) {
     return user != NULL && pw->pw_uid == console_uid && getuid() == console_uid;
 }
 
-static int evaluate(NSString *reason) {
+// The dialog timeout from the module options, the words after the module path on
+// its sudo_local line (e.g. "timeout=30"). Only root can edit that file, so a
+// program calling sudo cannot change it. A value that is not a whole number of
+// seconds in range is ignored and logged, so a typo can neither close the dialog
+// at once nor keep it open for good. Other options are ignored: install keeps the
+// options of the pam_tid.so line it replaces.
+static int dialog_timeout(int argc, const char **argv) {
+    int timeout = DEFAULT_TIMEOUT;
+    for (int i = 0; i < argc && argv && argv[i]; i++) {
+        if (strncmp(argv[i], "timeout=", 8) != 0) {
+            os_log(LOG, "ignoring unknown option %{public}s", argv[i]);
+            continue;
+        }
+        const char *value = argv[i] + 8;
+        char *end = NULL;
+        errno = 0;
+        long n = strtol(value, &end, 10);
+        if (errno || end == value || *end || n < MIN_TIMEOUT || n > MAX_TIMEOUT) {
+            os_log(LOG, "ignoring %{public}s: the timeout must be %d to %d seconds", argv[i], MIN_TIMEOUT, MAX_TIMEOUT);
+            continue;
+        }
+        timeout = (int)n;
+    }
+    return timeout;
+}
+
+static int evaluate(NSString *reason, int timeout) {
     LAContext *ctx = [LAContext new];
     NSError *err = nil;
     if (![ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&err]) {
@@ -657,7 +695,14 @@ static int evaluate(NSString *reason) {
                       if (!success) os_log(LOG, "declined: %{public}@", e.localizedDescription);
                       dispatch_semaphore_signal(done);
                   }];
-    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    // Without an answer, close the dialog and let sudo ask for the password, rather
+    // than keep sudo (and whatever started it) waiting forever.
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, timeout * NSEC_PER_SEC))) {
+        os_log(LOG, "no answer within %d seconds; sudo asks for the password instead", timeout);
+        [ctx invalidate];
+        dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        return PAM_AUTH_ERR;
+    }
     return ok ? PAM_SUCCESS : PAM_AUTH_ERR;
 }
 
@@ -665,7 +710,11 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     @autoreleasepool {
         const char *user = NULL;
         if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user) return PAM_AUTHINFO_UNAVAIL;
-        if (!in_aqua_session()) { os_log(LOG, "skip: no GUI session"); return PAM_AUTHINFO_UNAVAIL; }
+        SessionAttributeBits session = 0;
+        if (!in_desktop_session(&session)) {
+            os_log(LOG, "skip: sudo is not in a desktop session (session attributes 0x%x)", (unsigned)session);
+            return PAM_AUTHINFO_UNAVAIL;
+        }
 
         const void *askpass = NULL;
         if (pam_get_data(pamh, "askpass-enabled", &askpass) == PAM_SUCCESS) {
@@ -695,7 +744,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
             os_log_error(LOG, "seteuid(%d) failed: %{errno}d", getuid(), errno);
             return PAM_AUTHINFO_UNAVAIL;
         }
-        int rc = evaluate(reason);
+        int rc = evaluate(reason, dialog_timeout(argc, argv));
         if (geteuid() != saved_euid && seteuid(saved_euid) != 0) {
             os_log_fault(LOG, "cannot restore euid %d: %{errno}d", saved_euid, errno);
             abort();
