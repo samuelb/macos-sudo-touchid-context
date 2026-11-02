@@ -105,6 +105,7 @@ auth       sufficient     /usr/local/pam_tid_context/pam_tid_context.so timeout=
 | Option | Does |
 |---|---|
 | `timeout=<seconds>` | How long the dialog waits for an answer before sudo asks for the password: 5 to 600, default 60. Other values are ignored and logged |
+| `audit` | Logs the dialog text, which holds the whole command line, readable in the system log (`just logs`). Without it the log shows `<private>` there, because arguments can contain secrets. This is the unified log, not the BSM audit trail |
 
 Re-running `just install` keeps them.
 

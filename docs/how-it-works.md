@@ -395,6 +395,14 @@ caught it.
 - **Unified log:** the module logs under subsystem `pam_tid_context`
   (`just logs`). In zsh, `log` is a shell builtin, so `log show …` never reaches
   macOS's tool and prints nothing useful; call `/usr/bin/log`.
+- The dialog text is logged as private by default, because it holds the whole
+  command line, which can contain secrets; `/usr/bin/log` shows `<private>` for
+  it. The module option `audit` on its `sudo_local` line logs it readable
+  instead, in the unified log (not the BSM audit trail). Why the module showed a
+  warning or stepped aside stays readable either way; that reason can include
+  one word of the command, such as an unknown option or a command name not found
+  in `PATH`. To see the dialog text for a given call without changing
+  `sudo_local`, run `build/reason_test` with sudo's arguments.
 - `/usr/bin/log show` has rendered the module's messages as `<compose failure
   [UUID]>`: the event is recorded but the format string is not resolved. The
   LocalAuthentication and `coreauthd` lines around it are readable and were enough

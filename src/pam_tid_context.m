@@ -651,40 +651,54 @@ static BOOL target_is_console_user(const char *pam_user) {
     return user != NULL && pw->pw_uid == console_uid && getuid() == console_uid;
 }
 
-// The dialog timeout from the module options, the words after the module path on
-// its sudo_local line (e.g. "timeout=30"). Only root can edit that file, so a
-// program calling sudo cannot change it. A value that is not a whole number of
-// seconds in range is ignored and logged, so a typo can neither close the dialog
-// at once nor keep it open for good. Other options are ignored: install keeps the
-// options of the pam_tid.so line it replaces.
-static int dialog_timeout(int argc, const char **argv) {
-    int timeout = DEFAULT_TIMEOUT;
+// The module options, the words after the module path on its sudo_local line
+// (e.g. "timeout=30 audit"). Only root can edit that file, so a program
+// calling sudo cannot change them. Install keeps the options of the pam_tid.so
+// line it replaces, so options this module does not know are ignored (and logged).
+typedef struct {
+    int timeout;      // timeout=<seconds>: how long the dialog waits for an answer
+    BOOL audit;       // audit: log the dialog text readable, not as private
+} module_options;
+
+static module_options parse_options(int argc, const char **argv) {
+    module_options o = {DEFAULT_TIMEOUT, NO};
     for (int i = 0; i < argc && argv && argv[i]; i++) {
-        if (strncmp(argv[i], "timeout=", 8) != 0) {
-            os_log(LOG, "ignoring unknown option %{public}s", argv[i]);
-            continue;
+        const char *opt = argv[i];
+        if (strncmp(opt, "timeout=", 8) == 0) {
+            // A value that is not a whole number of seconds in range is ignored, so
+            // a typo can neither close the dialog at once nor keep it open for good.
+            const char *value = opt + 8;
+            char *end = NULL;
+            errno = 0;
+            long n = strtol(value, &end, 10);
+            if (errno || end == value || *end || n < MIN_TIMEOUT || n > MAX_TIMEOUT) {
+                os_log(LOG, "ignoring %{public}s: the timeout must be %d to %d seconds", opt, MIN_TIMEOUT, MAX_TIMEOUT);
+                continue;
+            }
+            o.timeout = (int)n;
+        } else if (strcmp(opt, "audit") == 0) {
+            o.audit = YES;
+        } else {
+            os_log(LOG, "ignoring unknown option %{public}s", opt);
         }
-        const char *value = argv[i] + 8;
-        char *end = NULL;
-        errno = 0;
-        long n = strtol(value, &end, 10);
-        if (errno || end == value || *end || n < MIN_TIMEOUT || n > MAX_TIMEOUT) {
-            os_log(LOG, "ignoring %{public}s: the timeout must be %d to %d seconds", argv[i], MIN_TIMEOUT, MAX_TIMEOUT);
-            continue;
-        }
-        timeout = (int)n;
     }
-    return timeout;
+    return o;
 }
 
-static int evaluate(NSString *reason, int timeout) {
+static int evaluate(NSString *reason, module_options opts) {
     LAContext *ctx = [LAContext new];
     NSError *err = nil;
     if (![ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&err]) {
         os_log(LOG, "Touch ID unavailable: %{public}@", err.localizedDescription);
         return PAM_AUTHINFO_UNAVAIL;
     }
-    os_log(LOG, "prompting: %{public}@", reason);
+    // The dialog text holds the whole command line, which can contain secrets
+    // (mysql -pPASSWORD, tokens), so by default it is logged as private:
+    // /usr/bin/log shows "<private>". The audit option logs it readable, as
+    // Linux-PAM's pam_unix does with its audit option for what it normally hides.
+    // The reasons for a warning or a fallback stay readable either way.
+    if (opts.audit) os_log(LOG, "prompting: %{public}@", reason);
+    else os_log(LOG, "prompting: %{private}@", reason);
 
     __block BOOL ok = NO;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
@@ -697,8 +711,8 @@ static int evaluate(NSString *reason, int timeout) {
                   }];
     // Without an answer, close the dialog and let sudo ask for the password, rather
     // than keep sudo (and whatever started it) waiting forever.
-    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, timeout * NSEC_PER_SEC))) {
-        os_log(LOG, "no answer within %d seconds; sudo asks for the password instead", timeout);
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, opts.timeout * NSEC_PER_SEC))) {
+        os_log(LOG, "no answer within %d seconds; sudo asks for the password instead", opts.timeout);
         [ctx invalidate];
         dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
         return PAM_AUTH_ERR;
@@ -751,7 +765,7 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv, uid_t s
         os_log_error(LOG, "seteuid(%d) failed: %{errno}d", getuid(), errno);
         return PAM_AUTHINFO_UNAVAIL;
     }
-    int rc = evaluate(reason, dialog_timeout(argc, argv));
+    int rc = evaluate(reason, parse_options(argc, argv));
     restore_euid(saved_euid);
     return rc;
 }
