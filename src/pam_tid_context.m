@@ -781,6 +781,9 @@ PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const cha
     return PAM_SUCCESS;
 }
 
+// The module is meant for auth lines only. Should it end up on an account line, it
+// must not approve the account (expired, locked, not allowed to log in): PAM_IGNORE
+// leaves that to the other modules. Apple's pam_tid returns PAM_SUCCESS here.
 PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SUCCESS;
+    return PAM_IGNORE;
 }

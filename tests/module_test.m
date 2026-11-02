@@ -26,5 +26,8 @@ int main(void) {
         return PAM_SUCCESS;
     }));
     check("effective uid unchanged", (int)euid, (int)geteuid());
+
+    // On an account line the module must not approve anything.
+    check("account check: ignored", PAM_IGNORE, pam_sm_acct_mgmt(NULL, 0, 0, NULL));
     return failed;
 }
