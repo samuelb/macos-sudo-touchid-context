@@ -3,6 +3,11 @@
 A Touch ID PAM module for macOS `sudo` whose dialog says what is being authorized
 and which process asked.
 
+This is a fork of
+[laurigates/macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context),
+the original project by [Lauri Gates](https://github.com/laurigates). This fork
+adds hardening of the installer and the module, and a Homebrew formula.
+
 Apple's `pam_tid.so` shows the same dialog for every request: "sudo is trying to
 execute a command as administrator." When a background job (a `brew upgrade`
 installing a cask `.pkg`, a launchd script) triggers it, the dialog gives no way
@@ -179,4 +184,4 @@ work inside sudo, the OpenPAM load-failure behaviour, and the evidence for each.
 
 ## License
 
-MIT
+MIT, © 2026 Lauri Gates; see [LICENSE](LICENSE).
