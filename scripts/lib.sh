@@ -328,3 +328,58 @@ confirm() {
     read -r -p "$1 [y/N] " answer
     [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]]
 }
+
+# --- Status (status.sh)
+
+# sudo_local_module <sudo_local>: the module path on sudo_local's active line
+# for this module, or nothing.
+sudo_local_module() {
+    [[ -f "$1" ]] || return 0
+    /usr/bin/awk '!/^[[:space:]]*#/ && $1 == "auth" && $3 ~ /(^|\/)pam_tid_context\.so$/ { print $3; exit }' "$1"
+}
+
+# sudo_local_has_stock <sudo_local>: whether an active line uses Apple's pam_tid.so.
+sudo_local_has_stock() {
+    [[ -f "$1" ]] && /usr/bin/awk '!/^[[:space:]]*#/ && $1 == "auth" && $3 ~ /(^|\/)pam_tid\.so(\.2)?$/ { found = 1 } END { exit !found }' "$1"
+}
+
+# status_summary <sudo_local> <dest> <built module> <command> [homebrew]
+# Prints a "status:" line (is the module in use, and does the built one differ
+# from the installed one) and, when there is something to do, a "next:" line
+# with the command to run. <command> is "just" in a checkout and
+# "pam-tid-context" in a package; a fifth argument adds Homebrew's upgrade hint.
+status_summary() {
+    local file=$1 dest=$2 built=$3 cmd=$4 brew=${5-} named
+    local root_shell="with a root shell open in another window (sudo -s), run"
+    named="$(sudo_local_module "$file")"
+    if [[ -n "$named" && ! -e "$named" ]]; then
+        echo "status:    BROKEN: sudo_local names $named, which does not exist, so sudo fails (\"unable to initialize PAM\")"
+        echo "next:      from a root shell, restore sudo_local from its .bak-<timestamp> copy; without one, see Recovery in the README"
+    elif [[ -n "$named" && "$named" != "$dest" ]]; then
+        echo "status:    installed at an old location, $named"
+        echo "next:      $root_shell: $cmd install (moves it to $dest)"
+    elif [[ -n "$named" ]]; then
+        if [[ ! -f "$built" ]]; then
+            echo "status:    installed; no built module here to compare it with"
+            echo "next:      just build, then just status"
+        elif cmp -s "$dest" "$built"; then
+            echo "status:    installed and up to date: the same as the built module"
+            if [[ -n "$brew" ]]; then
+                echo "next:      for a newer version: brew upgrade --fetch-HEAD pam-tid-context, then $cmd install"
+            fi
+        else
+            echo "status:    installed; the built module is different and can be installed in its place"
+            echo "next:      $root_shell: $cmd install"
+        fi
+    elif [[ -e "$dest" ]]; then
+        echo "status:    not in use: $dest exists, but sudo_local does not name it"
+        echo "next:      $root_shell: $cmd install to use it, or $cmd uninstall to remove it"
+    else
+        if sudo_local_has_stock "$file"; then
+            echo "status:    not installed: sudo uses Apple's pam_tid.so"
+        else
+            echo "status:    not installed"
+        fi
+        echo "next:      $root_shell: $cmd install"
+    fi
+}

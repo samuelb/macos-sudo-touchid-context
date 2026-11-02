@@ -52,6 +52,14 @@ expect "extra argument: usage"      2 "usage: pam-tid-context"           "$cmd" 
 
 built="$(shasum -a 256 "$repo/build/pam_tid_context.so" | cut -c1-16)"
 expect "status reads the packaged module" 0 "built:     $built" "$cmd" status
+# Whatever this Mac's sudo_local holds, the commands status suggests are the
+# package's own, and a checkout's are the just recipes.
+out="$("$cmd" status </dev/null 2>&1)"
+if [[ "$out" == status:* && "$out" != *"just "* ]]; then ok "package status suggests pam-tid-context, not just"
+else bad "package status suggests pam-tid-context, not just" "$out"; fi
+out="$("$repo/scripts/status.sh" </dev/null 2>&1)"
+if [[ "$out" == status:* && "$out" != *"pam-tid-context "* ]]; then ok "checkout status suggests just recipes"
+else bad "checkout status suggests just recipes" "$out"; fi
 
 # Homebrew's bin/pam-tid-context is a script that execs the packaged command
 # (write_exec_script), reached through a symlink in the prefix's bin.

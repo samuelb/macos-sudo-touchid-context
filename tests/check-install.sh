@@ -216,4 +216,45 @@ refused "two active Touch ID lines refused" $'auth sufficient pam_tid.so\nauth s
 refused "stock line next to this module refused" "auth sufficient pam_tid.so"$'\n'"$ours" "2 active Touch ID lines"
 refused "another pam_tid_* module refused" "auth sufficient /usr/local/lib/pam/pam_tid_other.so" "another Touch ID module"
 
+
+# --- status_summary: what status.sh says first, on temporary files. sudo_local
+# only ever names a file called pam_tid_context.so.
+st="$tmp/status"
+mkdir -p "$st/new" "$st/old"
+inst="$st/new/pam_tid_context.so" old="$st/old/pam_tid_context.so" gone="$st/gone/pam_tid_context.so"
+printf 'module A\n' > "$inst"
+printf 'module A\n' > "$old"
+printf 'module A\n' > "$st/same.so"
+printf 'module B\n' > "$st/other.so"
+sl() { printf '%s\n' "$@" > "$st/sudo_local"; }
+summary() { status_summary "$st/sudo_local" "$inst" "$@"; }
+fresh() { status_summary "$st/sudo_local" "$st/none/pam_tid_context.so" "$st/same.so" "$@"; }
+
+sl "auth       sufficient     pam_tid.so"
+expect "not installed, Apple's module"    "status:    not installed: sudo uses Apple's pam_tid.so" "$(fresh pam-tid-context)"
+expect "not installed: how to install"    "(sudo -s), run: pam-tid-context install" "$(fresh pam-tid-context)"
+sl "#auth       sufficient     pam_tid.so"
+expect "not installed, no Touch ID line"  "status:    not installed"$'\n' "$(fresh just)"
+rm "$st/sudo_local"
+expect "no sudo_local at all"             "status:    not installed"$'\n' "$(fresh just)"
+sl "#auth       sufficient     $inst"
+expect "a commented line is not in use"   "status:    not in use: $inst exists" "$(summary "$st/same.so" just)"
+expect "not in use: install or uninstall" "run: just install to use it, or just uninstall to remove it" "$(summary "$st/same.so" just)"
+
+sl "auth       sufficient     $inst"
+expect "up to date"                       "status:    installed and up to date" "$(summary "$st/same.so" just)"
+expect_eq "up to date: nothing to do"     1 "$(summary "$st/same.so" just | wc -l | tr -d ' ')"
+expect "up to date, Homebrew: newer"      "next:      for a newer version: brew upgrade --fetch-HEAD pam-tid-context, then pam-tid-context install" "$(summary "$st/same.so" pam-tid-context yes)"
+expect "built module differs"             "status:    installed; the built module is different and can be installed in its place" "$(summary "$st/other.so" pam-tid-context)"
+expect "differs: how to install it"       "(sudo -s), run: pam-tid-context install" "$(summary "$st/other.so" pam-tid-context)"
+expect "no build to compare with"         "next:      just build, then just status" "$(summary "$st/missing.so" just)"
+sl "auth       sufficient     $inst debug"
+expect "options after the path"           "status:    installed and up to date" "$(summary "$st/same.so" just)"
+
+sl "auth       sufficient     $gone"
+expect "named module missing: broken"     "status:    BROKEN: sudo_local names $gone, which does not exist" "$(summary "$st/same.so" just)"
+sl "auth       sufficient     $old"
+expect "old location"                     "status:    installed at an old location, $old" "$(summary "$st/same.so" just)"
+expect "old location: install moves it"   "run: just install (moves it to $inst)" "$(summary "$st/same.so" just)"
+
 exit "$fail"

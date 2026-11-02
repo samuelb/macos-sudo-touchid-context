@@ -111,7 +111,7 @@ upgrade changes nothing for sudo until you install again:
 
 ```
 brew upgrade --fetch-HEAD pam-tid-context
-pam-tid-context status   # installed module vs. this build
+pam-tid-context status   # says whether the new build differs from the installed one
 pam-tid-context install
 ```
 
@@ -147,7 +147,7 @@ to remove it, install the formula again and run `pam-tid-context uninstall`.
 
 | Recipe | Does |
 |---|---|
-| `just status` | Active `sudo_local` lines; installed vs built module hash; whether only root can replace the installed module. With Homebrew: `pam-tid-context status` |
+| `just status` | Whether the module is installed, whether the built one differs from it, and what to run next; then the active `sudo_local` lines, both hashes, and whether only root can replace the installed module. With Homebrew: `pam-tid-context status` |
 | `just screenshot [stock]` | Regenerates `docs/images/dialog.png`, or `dialog-stock.png` with `stock` (needs `pam_tid.so` as the active `sudo_local` line). Shows a dialog; wait for the capture message before touching |
 | `just logs [minutes]` | The module's unified-log lines (uses `/usr/bin/log`; in zsh, `log` is a builtin) |
 | `just lint` | shellcheck the scripts |
