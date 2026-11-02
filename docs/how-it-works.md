@@ -352,6 +352,7 @@ The same discussion shows `sshd-session` rejecting third-party modules on macOS
 | Other account / no enrolled finger | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 | Arguments the module cannot read with certainty (see [Reading sudo's arguments](#reading-sudos-arguments)) | warning dialog, then `PAM_SUCCESS` or `PAM_AUTH_ERR` | runs the command, or the terminal password prompt |
 | No argv at all | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
+| An Objective-C exception in the module (a bug) | `PAM_AUTHINFO_UNAVAIL`, after putting back the effective uid | terminal password prompt |
 
 Keeping Apple's `pam_tid.so` active *after* this module would show a second
 Touch ID dialog whenever the first is cancelled, which is why install comments

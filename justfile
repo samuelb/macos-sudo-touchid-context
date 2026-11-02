@@ -13,13 +13,15 @@ build:
     clang {{cflags}} -bundle -o build/pam_tid_context.so src/pam_tid_context.m {{frameworks}}
     clang {{cflags}} -o build/reason_test tests/reason_test.m {{frameworks}}
     clang {{cflags}} -o build/option_test tests/option_test.m {{frameworks}}
+    clang {{cflags}} -o build/module_test tests/module_test.m {{frameworks}}
     clang -Wall -Werror -o build/probe_load tests/probe_load.c -lpam
     clang -Wall -Werror -o build/harness tests/harness.c -lpam
 
-# Non-interactive checks: reason formatting, module options, install helpers, libpam accepting the built module
+# Non-interactive checks: reason formatting, module options and error handling, install helpers, libpam accepting the built module
 test: build
     tests/check-reasons.sh
     tests/check-options.sh
+    build/module_test
     tests/check-install.sh
     build/probe_load build/pam_tid_context.so
 

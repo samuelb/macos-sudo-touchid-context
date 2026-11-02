@@ -706,51 +706,75 @@ static int evaluate(NSString *reason, int timeout) {
     return ok ? PAM_SUCCESS : PAM_AUTH_ERR;
 }
 
-PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    @autoreleasepool {
-        const char *user = NULL;
-        if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user) return PAM_AUTHINFO_UNAVAIL;
-        SessionAttributeBits session = 0;
-        if (!in_desktop_session(&session)) {
-            os_log(LOG, "skip: sudo is not in a desktop session (session attributes 0x%x)", (unsigned)session);
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-
-        const void *askpass = NULL;
-        if (pam_get_data(pamh, "askpass-enabled", &askpass) == PAM_SUCCESS) {
-            os_log(LOG, "skip: sudo -A askpass mode");
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-
-        if (!target_is_console_user(user)) {
-            os_log(LOG, "skip: %{public}s is not the console user / invoking user", user);
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-
-        // Built before the euid switch: PATH is searched as root, as sudoers does first.
-        NSString *why = nil;
-        NSString *reason = build_reason(&why);
-        if (!reason) {
-            os_log(LOG, "skip: %{public}@; sudo asks for the password instead", why);
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-        if (why) os_log(LOG, "unverified: %{public}@; the dialog shows a warning", why);
-
-        // coreauthd evaluates for the caller's effective uid; inside setuid sudo that is
-        // root, who has no enrolled fingers ("No identities are enrolled"). Drop to the
-        // invoking user for the evaluation only.
-        uid_t saved_euid = geteuid();
-        if (saved_euid != getuid() && seteuid(getuid()) != 0) {
-            os_log_error(LOG, "seteuid(%d) failed: %{errno}d", getuid(), errno);
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-        int rc = evaluate(reason, dialog_timeout(argc, argv));
-        if (geteuid() != saved_euid && seteuid(saved_euid) != 0) {
-            os_log_fault(LOG, "cannot restore euid %d: %{errno}d", saved_euid, errno);
-            abort();
-        }
-        return rc;
+// Puts back the effective uid saved before the evaluation. Continuing in sudo with
+// the wrong one is worse than stopping, so a failure aborts.
+static void restore_euid(uid_t saved_euid) {
+    if (geteuid() != saved_euid && seteuid(saved_euid) != 0) {
+        os_log_fault(LOG, "cannot restore euid %d: %{errno}d", saved_euid, errno);
+        abort();
     }
+}
+
+static int authenticate(pam_handle_t *pamh, int argc, const char **argv, uid_t saved_euid) {
+    const char *user = NULL;
+    if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user) return PAM_AUTHINFO_UNAVAIL;
+    SessionAttributeBits session = 0;
+    if (!in_desktop_session(&session)) {
+        os_log(LOG, "skip: sudo is not in a desktop session (session attributes 0x%x)", (unsigned)session);
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+
+    const void *askpass = NULL;
+    if (pam_get_data(pamh, "askpass-enabled", &askpass) == PAM_SUCCESS) {
+        os_log(LOG, "skip: sudo -A askpass mode");
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+
+    if (!target_is_console_user(user)) {
+        os_log(LOG, "skip: %{public}s is not the console user / invoking user", user);
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+
+    // Built before the euid switch: PATH is searched as root, as sudoers does first.
+    NSString *why = nil;
+    NSString *reason = build_reason(&why);
+    if (!reason) {
+        os_log(LOG, "skip: %{public}@; sudo asks for the password instead", why);
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+    if (why) os_log(LOG, "unverified: %{public}@; the dialog shows a warning", why);
+
+    // coreauthd evaluates for the caller's effective uid; inside setuid sudo that is
+    // root, who has no enrolled fingers ("No identities are enrolled"). Drop to the
+    // invoking user for the evaluation only.
+    if (saved_euid != getuid() && seteuid(getuid()) != 0) {
+        os_log_error(LOG, "seteuid(%d) failed: %{errno}d", getuid(), errno);
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+    int rc = evaluate(reason, dialog_timeout(argc, argv));
+    restore_euid(saved_euid);
+    return rc;
+}
+
+// Runs the module's work so that an Objective-C exception, which would be a bug,
+// makes sudo ask for the password instead of aborting sudo. The effective uid is
+// put back first, because the exception may come while it is the invoking user's.
+// Objects allocated before the exception leak; this path should never run.
+static int run_guarded(uid_t saved_euid, int (^body)(void)) {
+    @autoreleasepool {
+        @try {
+            return body();
+        } @catch (id e) {
+            restore_euid(saved_euid);
+            os_log_error(LOG, "exception: %{public}@; sudo asks for the password instead", [e description]);
+            return PAM_AUTHINFO_UNAVAIL;
+        }
+    }
+}
+
+PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    uid_t saved_euid = geteuid();
+    return run_guarded(saved_euid, ^{ return authenticate(pamh, argc, argv, saved_euid); });
 }
 
 PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv) {
