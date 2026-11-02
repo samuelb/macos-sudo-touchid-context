@@ -32,6 +32,16 @@ what() {  # the reason without the requester, for the command parser cases
     printf '%s' "${out%% — requested by:*}"
 }
 
+fits() {  # fits <label> <actual>: at most 160 characters, the most the dialog is known to show
+    local LC_ALL=en_US.UTF-8
+    if (( ${#2} <= 160 )); then
+        printf 'ok   %s\n' "$1"
+    else
+        printf 'FAIL %s\n     %d characters: %s\n' "$1" "${#2}" "$2"
+        fail=1
+    fi
+}
+
 # brew's SystemCommand shape: /usr/bin/sudo [-A] -E -- <cmd>, parent is a script file.
 printf '#!/bin/bash\n"%s" -E -- /usr/sbin/installer -pkg /opt/homebrew/Caskroom/zoom/6.4.0/zoom.pkg -target /\n' "$bin" > "$tmp/fake-brew"
 chmod +x "$tmp/fake-brew"
@@ -89,8 +99,8 @@ expect "Homebrew's own-name variables hidden"  "run: /usr/sbin/installer -pkg x.
 mkdir -p "$tmp/evil" && printf '#!/bin/sh\n' > "$tmp/evil/id" && chmod +x "$tmp/evil/id"
 expect "PATH lookup"                           "run: /usr/bin/id -un" "$(PATH=/usr/bin:/bin what id -un)"
 expect "PATH lookup names the caller's copy"   "run: $tmp/evil/id -un" "$(PATH="$tmp/evil:/usr/bin" what id -un)"
-expect "a word after -- is never a variable"   "fallback: FOO=1 is not in PATH" "$(what -- FOO=1 /usr/bin/id)"
-expect "-- as an option value still counts"    "fallback: FOO=1 is not in PATH" "$(what -u -- FOO=1 /usr/bin/id)"
+expect "a word after -- is never a variable"   "UNVERIFIED command (FOO=1 is not in PATH), called as: reason_test -- FOO=1 /usr/bin/id" "$(what -- FOO=1 /usr/bin/id)"
+expect "-- as an option value still counts"    "UNVERIFIED command (FOO=1 is not in PATH)" "$(what -u -- FOO=1 /usr/bin/id)"
 # Other modes.
 expect "-e"                                    "edit: /etc/hosts" "$(what -e /etc/hosts)"
 expect "-e relative file"                      "edit: /private/etc/hosts" "$(cd /etc && what -e hosts)"
@@ -100,19 +110,24 @@ expect "-l"                                    "list your sudo rights" "$(what -
 expect "-l <cmd>"                              "check whether you may run: /usr/bin/id" "$(what -l /usr/bin/id)"
 expect "-v"                                    "refresh your cached sudo credentials" "$(what -v)"
 expect "-k <cmd>"                              "run: /usr/bin/id" "$(what -k /usr/bin/id)"
-# Anything it cannot be sure about leaves sudo to ask for the password.
-expect "ambiguous abbreviation"                "fallback: unknown or ambiguous option --pre" "$(what --pre /usr/bin/id)"
-expect "unknown option"                        "fallback: unknown option -X" "$(what -X /bin/ls)"
-expect "-R chroot"                             "fallback: -D/-R" "$(what -R /tmp /bin/sh)"
-expect "-D chdir"                              "fallback: -D/-R" "$(what -D /tmp /bin/ls)"
-expect "-h"                                    "fallback: -h/--host" "$(what -h)"
-expect "no command"                            "fallback: sudo without a command" "$(what -n)"
-expect "relative PATH entry"                   "fallback: PATH has a relative entry" "$(PATH="bin:/usr/bin" what id)"
-expect "only in the current directory"         "fallback: nosuchcmd is not in PATH outside" "$(PATH=".:/nonexistent" what nosuchcmd)"
+# Anything it cannot be sure about makes the dialog a warning: the reason, then how
+# sudo was called (argv[0] shortened to its last component), then the requester.
+expect "ambiguous abbreviation"                "UNVERIFIED command (unknown or ambiguous option --pre), called as: reason_test --pre /usr/bin/id" "$(what --pre /usr/bin/id)"
+expect "unknown option"                        "UNVERIFIED command (unknown option -X)" "$(what -X /bin/ls)"
+expect "-R chroot"                             "UNVERIFIED command (-D/-R change where the command runs), called as: reason_test -R /tmp /bin/sh" "$(what -R /tmp /bin/sh)"
+expect "-D chdir"                              "UNVERIFIED command (-D/-R" "$(what -D /tmp /bin/ls)"
+expect "-h"                                    "UNVERIFIED command (-h/--host)" "$(what -h)"
+expect "no command"                            "UNVERIFIED command (sudo without a command)" "$(what -n)"
+expect "relative PATH entry"                   "UNVERIFIED command (relative PATH entry bin), called as: reason_test id" "$(PATH="bin:/usr/bin" what id)"
+expect "only in the current directory"         "UNVERIFIED command (nosuchcmd could only come from . in PATH)" "$(PATH=".:/nonexistent" what nosuchcmd)"
 # An empty argv[0] would shift KERN_PROCARGS2's argv by one: "", /tmp/evil, /usr/bin/true
 # would read as "/usr/bin/true <first environment variable>".
-expect "empty argv[0]"                         "fallback: sudo's argv[0] is empty" \
+expect "empty argv[0]"                         "UNVERIFIED command (sudo's argv[0] is empty), called as: '' /tmp/evil /usr/bin/true" \
     "$(/usr/bin/perl -e 'exec {$ARGV[0]} "", "/tmp/evil", "/usr/bin/true"' "$bin")"
+# Caller-chosen text in the reason is escaped like the command.
+out="$(PATH=$'a\nrequested by: softwareupdate:/usr/bin' what id)"
+expect     "reason quotes caller text"          "UNVERIFIED command (relative PATH entry \$'a\\nrequested by'), called as: reason_test id" "$out"
+expect_not "reason has no raw newline"          $'\n' "$out"
 
 # --- Display: every argument reads back as itself.
 # A newline cannot draw a fake line, and the em dash of " — requested by:" cannot be typed.
@@ -126,14 +141,21 @@ expect "argument boundaries visible"     "run: /bin/sh -c 'a; b'" "$(what /bin/s
 expect "argument boundaries visible (2)" "run: /bin/sh -c 'a;' b" "$(what /bin/sh -c 'a;' b)"
 expect "quote and empty word"            "run: /bin/echo 'it'\\''s' ''" "$(what /bin/echo "it's" '')"
 expect "backslash inside an escape"      "run: /bin/echo \$'a\\\\b\\n'" "$(what /bin/echo $'a\\b\n')"
-expect "arguments that are not UTF-8"    "fallback: cannot read sudo's arguments, or they are not UTF-8" \
+expect "arguments that are not UTF-8"    "UNVERIFIED command (arguments not readable or not UTF-8), called as: sudo /bin/echo \$'\\xFF'" \
     "$(/usr/bin/perl -e 'exec {$ARGV[0]} "sudo", "/bin/echo", "\xff"' "$bin")"
 
-# The command is never cut: one that does not fit falls back to the password.
+# The command of a normal dialog is never cut: one that does not fit makes the
+# dialog a warning, which says so before the cut call.
 long="$(printf 'x%.0s' {1..300})"
-expect "long command not cut"            "fallback: the command is too long to show in full" "$(what -- /bin/echo "$long")"
+out="$("$bin" -- /bin/echo "$long")"
+expect "long command: warning"           "UNVERIFIED command (too long to show in full: 315 characters), called as: reason_test -- /bin/echo xxx" "$out"
+expect "long command: call cut"          "x… — requested by: " "$out"
+fits   "long command: warning fits" "$out"
 pad="$(printf ' %.0s' {1..200})"
-expect "padding cannot push the end out" "fallback: the command is too long" "$(what /bin/sh -c "$pad; evil")"
+expect "padding cannot push the end out" "UNVERIFIED command (too long to show in full" "$(what /bin/sh -c "$pad; evil")"
+out="$(PATH="$long:/usr/bin" "$bin" "$long")"
+fits   "long reason and call: warning fits" "$out"
+expect "long reason cut"                 "UNVERIFIED command (relative PATH entry xxxxxxxxxxxxxxxxxxx…), called as: reason_test xxx" "$out"
 # The requester is context the caller chooses anyway; it is cut, the command is not.
 printf '#!/bin/bash\n"%s" -- /usr/bin/true\n' "$bin" > "$tmp/long-parent"
 chmod +x "$tmp/long-parent"

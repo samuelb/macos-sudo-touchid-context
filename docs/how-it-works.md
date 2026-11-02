@@ -64,10 +64,10 @@ module runs inside the sudo process, so it can read:
   - A word with a space or shell punctuation, or an empty word, is
     single-quoted, so `sh -c 'a; b'` and `sh -c 'a;' b` look different.
 - The reason is capped at 160 characters; the dialog wraps long text at `/` and
-  showed a ~150-character reason in full. The command is never shortened,
-  because a cut hides exactly the part that matters (`sh -c "<200 spaces>;
-  evil"`). When it does not fit, the module steps aside and sudo asks for the
-  password. Only the requester is cut, with "…".
+  showed a ~150-character reason in full. The command is never shortened in a
+  normal dialog, because a cut hides exactly the part that matters (`sh -c
+  "<200 spaces>; evil"`). When it does not fit, the dialog becomes a warning
+  (below). Only the requester is cut, with "…".
 
 ### Reading sudo's arguments
 
@@ -101,8 +101,22 @@ argv the way sudo does. The rules are mirrored from `parse_args()` in sudo
   - `-e`/`sudoedit` show "edit:" and the absolute file paths.
   - `-l` and `-v` say what they do.
 
-Whatever the module cannot be sure about makes it return `PAM_AUTHINFO_UNAVAIL`,
-so sudo asks for the password instead. That includes:
+Whatever the module cannot be sure about turns the dialog into a warning. It
+gives the reason, how sudo was called, and the requester:
+
+```
+sudo is trying to run an UNVERIFIED command (-D/-R change where the command
+runs), called as: sudo -D /tmp /bin/ls — requested by: zsh
+```
+
+"Called as" is sudo's argv as the caller passed it (argv[0] shortened to its
+last path component), escaped like the command, and read from sudo's own memory.
+It is a clue for finding out what is going on, not a statement of what runs,
+which is why the warning comes first. Caller-chosen text in the reason (an
+option name, a `PATH` entry) is escaped the same way. To fit the 160 characters,
+the reason is cut at 40, then the call and the requester as needed; the warning
+itself is never cut. Approving a warning approves whatever sudo runs, as with
+Apple's dialog, so cancel it unless you know where it comes from. Cases:
 
 - unknown or ambiguous options;
 - `-D`/`-R`, which change where the command runs;
@@ -113,6 +127,9 @@ so sudo asks for the password instead. That includes:
   front of it, so every argument would shift by one, and the module checks
   sudo's in-memory `argv[0]` for it.
 - a command too long to show in full (the 160-character cap above).
+
+Only when sudo's argv cannot be read at all does the module return
+`PAM_AUTHINFO_UNAVAIL`, so sudo asks for the password.
 
 [sudo]: https://github.com/apple-oss-distributions/sudo/tree/sudo-114.100.11
 
@@ -216,7 +233,8 @@ The same discussion shows `sshd-session` rejecting third-party modules on macOS
 | `sudo -A` | `PAM_AUTHINFO_UNAVAIL` | askpass helper |
 | No GUI session (SSH) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 | Other account / no enrolled finger | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
-| Arguments the module cannot read with certainty (see [Reading sudo's arguments](#reading-sudos-arguments)) | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
+| Arguments the module cannot read with certainty (see [Reading sudo's arguments](#reading-sudos-arguments)) | warning dialog, then `PAM_SUCCESS` or `PAM_AUTH_ERR` | runs the command, or the terminal password prompt |
+| No argv at all | `PAM_AUTHINFO_UNAVAIL` | terminal password prompt |
 
 Keeping Apple's `pam_tid.so` active *after* this module would show a second
 Touch ID dialog whenever the first is cancelled, which is why install comments
